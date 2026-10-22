@@ -2,6 +2,7 @@ package com.example.viewmodel
 
 import android.content.Context
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.example.accessibility.PureGuardAccessibilityService
 import com.example.model.DnsRule
 import com.example.model.InterceptLogEntry
@@ -13,6 +14,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -58,6 +60,13 @@ class GuardViewModel : ViewModel() {
 
     init {
         rebuildDnsRuleIndex(_uiState.value.dnsRules)
+        viewModelScope.launch {
+            PureGuardAccessibilityService.isRunning.collect { running ->
+                if (running) {
+                    _uiState.update { it.copy(isAccessibilityRunning = true) }
+                }
+            }
+        }
         LocalDnsVpnService.onDomainInspected = { domain ->
             evaluateDnsQuery(domain)
         }

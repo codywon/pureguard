@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.PlayCircleFilled
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.VerifiedUser
@@ -35,6 +37,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -57,6 +60,8 @@ fun DashboardScreen(
     isVpnRunning: Boolean,
     onToggleVpn: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
+    onOpenAppDetailsSettings: () -> Unit = {},
+    onRefreshAccessibility: () -> Unit = {},
     onJumpToSandbox: () -> Unit,
     onClearLogs: () -> Unit,
     modifier: Modifier = Modifier
@@ -203,11 +208,32 @@ fun DashboardScreen(
                     }
                     if (!uiState.isAccessibilityRunning) {
                         Spacer(modifier = Modifier.width(10.dp))
-                        FilledTonalButton(
-                            onClick = onOpenAccessibilitySettings,
-                            modifier = Modifier.testTag("open_accessibility_btn")
+                        Column(
+                            horizontalAlignment = Alignment.End,
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Text("开启服务")
+                            FilledTonalButton(
+                                onClick = onOpenAccessibilitySettings,
+                                modifier = Modifier.testTag("open_accessibility_btn")
+                            ) {
+                                Text("开启服务")
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                TextButton(
+                                    onClick = onRefreshAccessibility,
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Text("刷新状态", fontSize = 12.sp)
+                                }
+                                TextButton(
+                                    onClick = onOpenAppDetailsSettings,
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text("解除受限", fontSize = 12.sp)
+                                }
+                            }
                         }
                     }
                 }

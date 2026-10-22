@@ -35,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -47,6 +48,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.accessibility.PureGuardAccessibilityService
@@ -91,8 +95,23 @@ fun PureGuardApp(
     val isVpnRunning by LocalDnsVpnService.isRunning.collectAsStateWithLifecycle()
     var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
 
+    // 页面冷启动时初次检测
     LaunchedEffect(Unit) {
         viewModel.updateAccessibilityStatus(context)
+    }
+
+    // 核心修复：当从系统设置页面授权返回应用时（ON_RESUME），立即自动重检授权状态
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.updateAccessibilityStatus(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     if (selectedTabIndex != 0) {
@@ -208,6 +227,12 @@ fun PureGuardApp(
                     onToggleVpn = handleToggleVpn,
                     onOpenAccessibilitySettings = {
                         PureGuardAccessibilityService.openAccessibilitySettings(context)
+                    },
+                    onOpenAppDetailsSettings = {
+                        PureGuardAccessibilityService.openAppDetailsSettings(context)
+                    },
+                    onRefreshAccessibility = {
+                        viewModel.updateAccessibilityStatus(context)
                     },
                     onJumpToSandbox = { selectedTabIndex = GuardNavTab.SANDBOX.ordinal },
                     onClearLogs = viewModel::clearLogs,

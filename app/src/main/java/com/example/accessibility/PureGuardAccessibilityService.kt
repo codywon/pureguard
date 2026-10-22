@@ -4,8 +4,10 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -181,16 +183,55 @@ class PureGuardAccessibilityService : AccessibilityService() {
         var onNodeClicked: ((packageName: String, nodeInfo: String, ruleName: String) -> Unit)? = null
 
         fun isServiceRunning(context: Context): Boolean {
-            val enabledServices = Settings.Secure.getString(
-                context.contentResolver,
-                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-            ) ?: return false
-            val serviceName = "${context.packageName}/${PureGuardAccessibilityService::class.java.canonicalName}"
-            return enabledServices.contains(serviceName) || enabledServices.contains(PureGuardAccessibilityService::class.java.simpleName)
+            // 1. 若服务已与系统建立连接并激活，直接返回 true
+            if (_isRunning.value) return true
+
+            // 2. 使用 AccessibilityManager 官方标准 API 获取已启用服务
+            try {
+                val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
+                val enabledServices = am?.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+                if (enabledServices != null) {
+                    val targetName = PureGuardAccessibilityService::class.java.name
+                    val isFound = enabledServices.any { service ->
+                        val sInfo = service.resolveInfo?.serviceInfo ?: return@any false
+                        sInfo.packageName == context.packageName && (sInfo.name == targetName || sInfo.name.contains("PureGuardAccessibilityService"))
+                    }
+                    if (isFound) return true
+                }
+            } catch (_: Exception) {
+            }
+
+            // 3. 回退查询 Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES 字段
+            try {
+                val enabledServices = Settings.Secure.getString(
+                    context.contentResolver,
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+                ) ?: return false
+                val colonSplitter = enabledServices.split(":")
+                for (componentName in colonSplitter) {
+                    if (componentName.contains(context.packageName) && componentName.contains("PureGuardAccessibilityService")) {
+                        return true
+                    }
+                    if (componentName.contains("PureGuardAccessibilityService")) {
+                        return true
+                    }
+                }
+            } catch (_: Exception) {
+            }
+
+            return false
         }
 
         fun openAccessibilitySettings(context: Context) {
             val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(intent)
+        }
+
+        fun openAppDetailsSettings(context: Context) {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", context.packageName, null)
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
             context.startActivity(intent)
