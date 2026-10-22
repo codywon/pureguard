@@ -1,6 +1,8 @@
 package com.example.viewmodel
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
+import com.example.accessibility.PureGuardAccessibilityService
 import com.example.model.DnsRule
 import com.example.model.InterceptLogEntry
 import com.example.model.InterceptType
@@ -19,6 +21,8 @@ import java.util.UUID
 data class GuardUiState(
     val autoSkipEngineEnabled: Boolean = true,
     val preserveRewardCallback: Boolean = true,
+    val fastSkipBlackScreenAd: Boolean = true,
+    val isAccessibilityRunning: Boolean = false,
     val dnsRules: List<DnsRule> = GuardViewModel.defaultDnsRules(),
     val selectorRules: List<SkipSelectorRule> = GuardViewModel.defaultSelectorRules(),
     val logs: List<InterceptLogEntry> = GuardViewModel.defaultInitialLogs(),
@@ -28,7 +32,7 @@ data class GuardUiState(
     val currentEpisode: Int = 12,
     val isEpisodeUnlocked: Boolean = true,
     val activeSimulatedAd: SimulatedAdType? = null,
-    val lastSandboxStatusMessage: String = "就绪 · 自动匹配已启用"
+    val lastSandboxStatusMessage: String = "就绪 · 自动匹配与黑屏快跳保护已启用"
 )
 
 class GuardViewModel : ViewModel() {
@@ -39,6 +43,38 @@ class GuardViewModel : ViewModel() {
     init {
         LocalDnsVpnService.onDomainInspected = { domain ->
             evaluateDnsQuery(domain)
+        }
+        LocalDnsVpnService.isDomainBlocked = { domain ->
+            isDnsDomainBlocked(domain)
+        }
+        PureGuardAccessibilityService.onNodeClicked = { pkg, nodeInfo, ruleName ->
+            handleSystemLevelAutoSkip(pkg, nodeInfo, ruleName)
+        }
+    }
+
+    fun isDnsDomainBlocked(domain: String): Boolean {
+        val clean = domain.trim().lowercase(Locale.ROOT)
+        val state = _uiState.value
+        return state.dnsRules.any { rule ->
+            rule.isEnabled && (clean == rule.domainPattern || clean.endsWith(".${rule.domainPattern}") || clean.contains(rule.domainPattern))
+        }
+    }
+
+    fun updateAccessibilityStatus(context: Context) {
+        val running = PureGuardAccessibilityService.isServiceRunning(context)
+        _uiState.update { it.copy(isAccessibilityRunning = running) }
+    }
+
+    fun toggleFastSkipBlackScreen(enabled: Boolean) {
+        _uiState.update {
+            it.copy(
+                fastSkipBlackScreenAd = enabled,
+                lastSandboxStatusMessage = if (enabled) {
+                    "黑屏快跳保护已启用：视频过滤后自动直接恢复短剧播放"
+                } else {
+                    "黑屏快跳保护已关闭：将完整播放倒计时"
+                }
+            )
         }
     }
 
@@ -167,9 +203,41 @@ class GuardViewModel : ViewModel() {
 
     fun triggerSimulatedAd(adType: SimulatedAdType) {
         val state = _uiState.value
+        val isBlockedByDns = evaluateDnsQuery(adType.adDomain)
+
+        // 核心修复：如果已拦截广告域名且开启了黑屏快跳保护，直接跳过黑屏并自动接着播放短剧，无需在黑屏死等！
+        if (isBlockedByDns && state.fastSkipBlackScreenAd) {
+            val now = currentTimestamp()
+            val logEntry = InterceptLogEntry(
+                id = UUID.randomUUID().toString(),
+                timestamp = now,
+                type = InterceptType.DNS_BLOCK,
+                target = "${adType.title} (${adType.adDomain})",
+                ruleApplied = "DNS 拦截广告视频 + 穿透黑屏快跳保护 -> 自动恢复播放",
+                savedTimeMs = adType.durationSec * 1000L,
+                blocked = true
+            )
+            val nextEp = if (adType == SimulatedAdType.REWARD_UNLOCK || adType == SimulatedAdType.EPISODE_INTERSTITIAL) {
+                state.currentEpisode + 1
+            } else {
+                state.currentEpisode
+            }
+            _uiState.update {
+                it.copy(
+                    activeSimulatedAd = null,
+                    isEpisodeUnlocked = true,
+                    currentEpisode = nextEp,
+                    totalAdsSkipped = it.totalAdsSkipped + 1,
+                    totalSavedSeconds = it.totalSavedSeconds + adType.durationSec,
+                    logs = (listOf(logEntry) + it.logs).take(60),
+                    lastSandboxStatusMessage = "⚡ 检测到视频流被过滤：已触发黑屏快跳保护，自动继续播放短剧 EP.$nextEp！"
+                )
+            }
+            return
+        }
+
         if (adType == SimulatedAdType.REWARD_UNLOCK && !state.preserveRewardCallback) {
-            val blockedByDns = evaluateDnsQuery(adType.adDomain)
-            if (blockedByDns) {
+            if (isBlockedByDns) {
                 _uiState.update {
                     it.copy(
                         activeSimulatedAd = null,
@@ -184,7 +252,65 @@ class GuardViewModel : ViewModel() {
         _uiState.update {
             it.copy(
                 activeSimulatedAd = adType,
-                lastSandboxStatusMessage = "负载注入：${adType.title} (${adType.viewId})"
+                lastSandboxStatusMessage = if (isBlockedByDns) {
+                    "视频已被过滤(黑屏状态)，倒计时结束后将自动接着播放短剧"
+                } else {
+                    "负载注入：${adType.title} (${adType.viewId})"
+                }
+            )
+        }
+    }
+
+    fun onCountdownFinished(adType: SimulatedAdType) {
+        val state = _uiState.value
+        if (state.activeSimulatedAd == null) return
+
+        val now = currentTimestamp()
+        val logEntry = InterceptLogEntry(
+            id = UUID.randomUUID().toString(),
+            timestamp = now,
+            type = if (adType == SimulatedAdType.REWARD_UNLOCK) InterceptType.REWARD_CALLBACK else InterceptType.UI_AUTO_SKIP,
+            target = "${adType.title} (${adType.viewId})",
+            ruleApplied = "倒计时结束 -> 自动关闭黑屏并接着播放短剧",
+            savedTimeMs = 0L,
+            blocked = true
+        )
+
+        val nextEp = if (adType == SimulatedAdType.REWARD_UNLOCK || adType == SimulatedAdType.EPISODE_INTERSTITIAL) {
+            state.currentEpisode + 1
+        } else {
+            state.currentEpisode
+        }
+
+        _uiState.update { current ->
+            current.copy(
+                activeSimulatedAd = null,
+                isEpisodeUnlocked = true,
+                currentEpisode = nextEp,
+                totalAdsSkipped = current.totalAdsSkipped + 1,
+                logs = (listOf(logEntry) + current.logs).take(60),
+                lastSandboxStatusMessage = "倒计时结束：已自动关闭广告并恢复短剧播放 (EP.$nextEp)"
+            )
+        }
+    }
+
+    fun handleSystemLevelAutoSkip(packageName: String, nodeInfo: String, ruleName: String) {
+        val now = currentTimestamp()
+        val entry = InterceptLogEntry(
+            id = UUID.randomUUID().toString(),
+            timestamp = now,
+            type = InterceptType.UI_AUTO_SKIP,
+            target = "$packageName [$nodeInfo]",
+            ruleApplied = "无障碍自动跳过: $ruleName",
+            savedTimeMs = 5000L,
+            blocked = true
+        )
+        _uiState.update { current ->
+            current.copy(
+                totalAdsSkipped = current.totalAdsSkipped + 1,
+                totalSavedSeconds = current.totalSavedSeconds + 5,
+                logs = (listOf(entry) + current.logs).take(60),
+                lastSandboxStatusMessage = "系统级跳过生效: $packageName ($ruleName)"
             )
         }
     }

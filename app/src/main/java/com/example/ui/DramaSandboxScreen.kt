@@ -62,26 +62,31 @@ fun DramaSandboxScreen(
     uiState: GuardUiState,
     onToggleAutoSkip: (Boolean) -> Unit,
     onTogglePreserveReward: (Boolean) -> Unit,
+    onToggleFastSkip: (Boolean) -> Unit,
     onTriggerAd: (SimulatedAdType) -> Unit,
     onAutoSkipExecuted: (SimulatedAdType) -> Unit,
+    onCountdownFinished: (SimulatedAdType) -> Unit,
     onManualDismissAd: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val activeAd = uiState.activeSimulatedAd
     var countdown by remember(activeAd) { mutableIntStateOf(activeAd?.durationSec ?: 0) }
 
-    LaunchedEffect(activeAd, uiState.autoSkipEngineEnabled) {
-        if (activeAd != null && uiState.autoSkipEngineEnabled) {
+    LaunchedEffect(activeAd, uiState.autoSkipEngineEnabled, uiState.fastSkipBlackScreenAd) {
+        if (activeAd != null && (uiState.autoSkipEngineEnabled || uiState.fastSkipBlackScreenAd)) {
             delay(180L)
             onAutoSkipExecuted(activeAd)
         }
     }
 
-    LaunchedEffect(activeAd, uiState.autoSkipEngineEnabled) {
-        if (activeAd != null && !uiState.autoSkipEngineEnabled) {
-            while (countdown > 0) {
+    LaunchedEffect(activeAd, countdown, uiState.autoSkipEngineEnabled, uiState.fastSkipBlackScreenAd) {
+        if (activeAd != null && !uiState.autoSkipEngineEnabled && !uiState.fastSkipBlackScreenAd) {
+            if (countdown > 0) {
                 delay(1000L)
                 countdown--
+            } else {
+                // 核心修复：倒计时到 0 后自动完成跳过并恢复短剧播放，彻底解决黑屏停留卡死问题
+                onCountdownFinished(activeAd)
             }
         }
     }
@@ -159,6 +164,45 @@ fun DramaSandboxScreen(
                         checked = uiState.preserveRewardCallback,
                         onCheckedChange = onTogglePreserveReward,
                         modifier = Modifier.testTag("sandbox_preserve_reward_switch")
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "黑屏秒跳保护",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text(
+                                    text = "推荐",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                        Text(
+                            text = "DNS 过滤广告视频后，免除黑屏与倒计时，直接自动继续播放短剧",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = uiState.fastSkipBlackScreenAd,
+                        onCheckedChange = onToggleFastSkip,
+                        modifier = Modifier.testTag("sandbox_fast_skip_switch")
                     )
                 }
             }
@@ -386,6 +430,34 @@ fun DramaSandboxScreen(
                                         fontFamily = FontFamily.Monospace
                                     )
                                 }
+                            }
+                        }
+
+                        Surface(
+                            color = Color(0xFF047857),
+                            shape = RoundedCornerShape(50),
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .clickable { onManualDismissAd() }
+                                .testTag("simulated_ad_resume_drama_button")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PlayArrow,
+                                    contentDescription = "继续播放短剧",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "立即跳过黑屏，继续播放短剧",
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
                     }

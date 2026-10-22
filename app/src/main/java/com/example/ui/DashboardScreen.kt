@@ -18,12 +18,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.PlayCircleFilled
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -54,6 +56,7 @@ fun DashboardScreen(
     uiState: GuardUiState,
     isVpnRunning: Boolean,
     onToggleVpn: () -> Unit,
+    onOpenAccessibilitySettings: () -> Unit,
     onJumpToSandbox: () -> Unit,
     onClearLogs: () -> Unit,
     modifier: Modifier = Modifier
@@ -115,6 +118,8 @@ fun DashboardScreen(
                                         append(if (uiState.autoSkipEngineEnabled) "节点匹配: 启用" else "节点匹配: 暂停")
                                         append(" · ")
                                         append(if (isVpnRunning) "DNS 隧道: 运行中" else "DNS 隧道: 待机")
+                                        append(" · ")
+                                        append(if (uiState.isAccessibilityRunning) "系统跳过: 运行" else "系统跳过: 未开启")
                                     },
                                     color = Color(0xFFA7F3D0),
                                     fontSize = 12.sp
@@ -144,6 +149,65 @@ fun DashboardScreen(
                             Icon(Icons.Default.Shield, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(if (isVpnRunning) "停止 VPN" else "启动 VPN")
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (uiState.isAccessibilityRunning) {
+                        Color(0xFF065F46).copy(alpha = 0.35f)
+                    } else {
+                        Color(0xFF78350F).copy(alpha = 0.35f)
+                    }
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (uiState.isAccessibilityRunning) Icons.Default.CheckCircle else Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = if (uiState.isAccessibilityRunning) Color(0xFF10B981) else Color(0xFFF59E0B),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (uiState.isAccessibilityRunning) "系统级自动跳过服务: 运行中" else "系统级自动跳过服务: 未授权",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (uiState.isAccessibilityRunning) Color(0xFF34D399) else Color(0xFFFDE68A)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (uiState.isAccessibilityRunning) {
+                                "正在监听短剧 App 广告节点，视频过滤后黑屏或倒计时结束将自动点击跳过并继续播放短剧。"
+                            } else {
+                                "开启无障碍后，可自动识别并跳过外部短剧 App 广告过滤后的黑屏等待与倒计时。"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (!uiState.isAccessibilityRunning) {
+                        Spacer(modifier = Modifier.width(10.dp))
+                        FilledTonalButton(
+                            onClick = onOpenAccessibilitySettings,
+                            modifier = Modifier.testTag("open_accessibility_btn")
+                        ) {
+                            Text("开启服务")
                         }
                     }
                 }

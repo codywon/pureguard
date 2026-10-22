@@ -5,4 +5,6 @@
     <string name="tab_sandbox">沙盒测试</string>
     <string name="tab_dns_rules">DNS 规则</string>
     <string name="tab_gkd_builder">选择器</string>
+    <string name="accessibility_service_name">PureGuard 自动跳过服务</string>
+    <string name="accessibility_service_description">自动识别并点击广告弹窗、倒计时结束后的跳过与关闭节点，解决广告过滤后黑屏无法自动播放短剧的问题。</string>
 </resources>

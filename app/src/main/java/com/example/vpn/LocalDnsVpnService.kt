@@ -106,7 +106,11 @@ class LocalDnsVpnService : VpnService() {
                 if (length > 0) {
                     val domain = extractDnsQueryDomain(packet.array(), length)
                     if (!domain.isNullOrBlank()) {
+                        val blocked = isDomainBlocked?.invoke(domain) ?: false
                         onDomainInspected?.invoke(domain)
+                        if (blocked) {
+                            sendBlockedDnsResponse(outputStream, packet.array(), length)
+                        }
                     }
                     packet.clear()
                 }
@@ -153,6 +157,94 @@ class LocalDnsVpnService : VpnService() {
         return if (parts.isNotEmpty()) parts.joinToString(".") else null
     }
 
+    /**
+     * 对被拦截的广告域名直接发送即时 NXDOMAIN DNS 响应，
+     * 避免播放器/SDK 网络请求长时间挂起导致黑屏死等倒计时
+     */
+    private fun sendBlockedDnsResponse(output: FileOutputStream, rawPacket: ByteArray, length: Int) {
+        try {
+            val ipHeaderLength = (rawPacket[0].toInt() and 0x0F) * 4
+            val questionEnd = findDnsQuestionEnd(rawPacket, ipHeaderLength + 8 + 12, length)
+            if (questionEnd <= 0) return
+
+            val dnsLength = questionEnd - (ipHeaderLength + 8)
+            val totalLength = ipHeaderLength + 8 + dnsLength
+            val response = ByteArray(totalLength)
+            System.arraycopy(rawPacket, 0, response, 0, totalLength)
+
+            // 1. Swap IP addresses
+            for (i in 0 until 4) {
+                val temp = response[12 + i]
+                response[12 + i] = response[16 + i]
+                response[16 + i] = temp
+            }
+            // Set IP Total Length
+            response[2] = ((totalLength ushr 8) and 0xFF).toByte()
+            response[3] = (totalLength and 0xFF).toByte()
+            // Recalculate IP Checksum
+            response[10] = 0
+            response[11] = 0
+            val ipChecksum = computeIpChecksum(response, ipHeaderLength)
+            response[10] = ((ipChecksum ushr 8) and 0xFF).toByte()
+            response[11] = (ipChecksum and 0xFF).toByte()
+
+            // 2. Swap UDP Ports
+            val srcPort0 = response[ipHeaderLength]
+            val srcPort1 = response[ipHeaderLength + 1]
+            response[ipHeaderLength] = response[ipHeaderLength + 2]
+            response[ipHeaderLength + 1] = response[ipHeaderLength + 3]
+            response[ipHeaderLength + 2] = srcPort0
+            response[ipHeaderLength + 3] = srcPort1
+
+            // Set UDP Length & Zero Checksum
+            val udpLength = 8 + dnsLength
+            response[ipHeaderLength + 4] = ((udpLength ushr 8) and 0xFF).toByte()
+            response[ipHeaderLength + 5] = (udpLength and 0xFF).toByte()
+            response[ipHeaderLength + 6] = 0
+            response[ipHeaderLength + 7] = 0
+
+            // 3. DNS Header: Set Response Flag and NXDOMAIN (0x8183)
+            val dnsOffset = ipHeaderLength + 8
+            response[dnsOffset + 2] = 0x81.toByte()
+            response[dnsOffset + 3] = 0x83.toByte()
+            response[dnsOffset + 6] = 0
+            response[dnsOffset + 7] = 0
+            response[dnsOffset + 8] = 0
+            response[dnsOffset + 9] = 0
+            response[dnsOffset + 10] = 0
+            response[dnsOffset + 11] = 0
+
+            output.write(response)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun findDnsQuestionEnd(raw: ByteArray, startOffset: Int, maxLen: Int): Int {
+        var offset = startOffset
+        while (offset < maxLen) {
+            val len = raw[offset].toInt() and 0xFF
+            if (len == 0) {
+                return offset + 1 + 4
+            }
+            offset += 1 + len
+        }
+        return -1
+    }
+
+    private fun computeIpChecksum(header: ByteArray, length: Int): Int {
+        var sum = 0
+        var i = 0
+        while (i < length) {
+            val word = ((header[i].toInt() and 0xFF) shl 8) or (header[i + 1].toInt() and 0xFF)
+            sum += word
+            i += 2
+        }
+        while ((sum ushr 16) != 0) {
+            sum = (sum and 0xFFFF) + (sum ushr 16)
+        }
+        return (sum.inv()) and 0xFFFF
+    }
+
     private fun stopVpnTunnel() {
         _isRunning.value = false
         packetJob?.cancel()
@@ -193,5 +285,6 @@ class LocalDnsVpnService : VpnService() {
         val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
         var onDomainInspected: ((String) -> Unit)? = null
+        var isDomainBlocked: ((String) -> Boolean)? = null
     }
 }

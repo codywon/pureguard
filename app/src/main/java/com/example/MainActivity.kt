@@ -35,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -48,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.accessibility.PureGuardAccessibilityService
 import com.example.ui.DashboardScreen
 import com.example.ui.DnsRulesScreen
 import com.example.ui.DramaSandboxScreen
@@ -88,6 +90,10 @@ fun PureGuardApp(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val isVpnRunning by LocalDnsVpnService.isRunning.collectAsStateWithLifecycle()
     var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
+
+    LaunchedEffect(Unit) {
+        viewModel.updateAccessibilityStatus(context)
+    }
 
     if (selectedTabIndex != 0) {
         BackHandler {
@@ -200,6 +206,9 @@ fun PureGuardApp(
                     uiState = uiState,
                     isVpnRunning = isVpnRunning,
                     onToggleVpn = handleToggleVpn,
+                    onOpenAccessibilitySettings = {
+                        PureGuardAccessibilityService.openAccessibilitySettings(context)
+                    },
                     onJumpToSandbox = { selectedTabIndex = GuardNavTab.SANDBOX.ordinal },
                     onClearLogs = viewModel::clearLogs,
                     modifier = Modifier.padding(innerPadding)
@@ -210,8 +219,10 @@ fun PureGuardApp(
                     uiState = uiState,
                     onToggleAutoSkip = viewModel::toggleAutoSkipEngine,
                     onTogglePreserveReward = viewModel::togglePreserveRewardCallback,
+                    onToggleFastSkip = viewModel::toggleFastSkipBlackScreen,
                     onTriggerAd = viewModel::triggerSimulatedAd,
                     onAutoSkipExecuted = viewModel::performAutoSkipOnActiveAd,
+                    onCountdownFinished = viewModel::onCountdownFinished,
                     onManualDismissAd = viewModel::manualDismissAd,
                     modifier = Modifier.padding(innerPadding)
                 )
