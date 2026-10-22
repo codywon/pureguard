@@ -131,6 +131,19 @@ class PureGuardAccessibilityService : AccessibilityService() {
             packageName.startsWith("com.phoenix.") ||
             packageName.startsWith("com.dragon.")
 
+        // 0. 实机精准命中：针对官方红果短剧 (com.phoenix.read) 广告底栏（上滑继续观看短剧）精确 ViewId
+        if (isHongguo) {
+            for (viewId in HONGGUO_SWIPE_UP_VIEW_IDS) {
+                val nodes = root.findAccessibilityNodeInfosByViewId(viewId)
+                if (!nodes.isNullOrEmpty()) {
+                    Log.i(TAG, "[$packageName] 命中红果广告底栏精准ID: $viewId，立即触发上滑手势")
+                    if (performSwipeUp(packageName, "命中红果短剧广告底栏精准ID: $viewId")) {
+                        return
+                    }
+                }
+            }
+        }
+
         // 1. 针对短剧应用（红果免费短剧）：检索“上滑继续观看短剧”等关键词，自动执行手势切集
         for (keyword in SWIPE_SEARCH_KEYWORDS) {
             val nodes = root.findAccessibilityNodeInfosByText(keyword)
@@ -312,6 +325,16 @@ class PureGuardAccessibilityService : AccessibilityService() {
             }
             context.startActivity(intent)
         }
+
+        // 实测小米17真机红果短剧 (com.phoenix.read) 广告底栏（上滑继续观看短剧）精准 ViewId
+        private val HONGGUO_SWIPE_UP_VIEW_IDS = listOf(
+            "com.phoenix.read:id/aq7", // “上滑继续观看短剧” 文本节点
+            "com.phoenix.read:id/apt", // “上滑继续观看短剧” 底部容器
+            "com.phoenix.read:id/aq6", // 上滑向上双箭头 ImageView
+            "aq7",
+            "apt",
+            "aq6"
+        )
 
         private val SWIPE_SEARCH_KEYWORDS = listOf(
             "上滑",
