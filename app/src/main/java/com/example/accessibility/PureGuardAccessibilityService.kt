@@ -21,6 +21,7 @@ class PureGuardAccessibilityService : AccessibilityService() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var lastClickTime = 0L
+    private var lastInspectTime = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -37,13 +38,25 @@ class PureGuardAccessibilityService : AccessibilityService() {
             return
         }
 
-        val rootNode = rootInActiveWindow ?: return
-        val packageName = event.packageName?.toString() ?: ""
-
         val now = System.currentTimeMillis()
-        if (now - lastClickTime < 350L) {
+        // 1. 点击去抖动：跳过触发后至少冷却 400ms，避免连击导致误触后续界面
+        if (now - lastClickTime < 400L) {
             return
         }
+
+        // 2. 高频内容变动节流：TYPE_WINDOW_CONTENT_CHANGED 至少间隔 250ms 检测一次，杜绝手机发热和掉帧
+        if (eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED && (now - lastInspectTime < 250L)) {
+            return
+        }
+        lastInspectTime = now
+
+        val packageName = event.packageName?.toString() ?: ""
+        // 过滤自身应用主界面触发，减少无意义的 View 树扫描开销
+        if (packageName == applicationContext.packageName) {
+            return
+        }
+
+        val rootNode = rootInActiveWindow ?: return
 
         try {
             findAndClickSkipOrCloseNode(rootNode, packageName)
@@ -52,10 +65,10 @@ class PureGuardAccessibilityService : AccessibilityService() {
     }
 
     private fun findAndClickSkipOrCloseNode(root: AccessibilityNodeInfo, packageName: String) {
-        // 1. 优先按短剧/穿山甲/优量汇常见关闭和跳过 ViewId 检索
+        // 1. 优先按短剧/穿山甲/优量汇常见关闭和跳过 ViewId 检索（O(1) 索引快速命中）
         for (viewId in COMMON_AD_CLOSE_VIEW_IDS) {
             val nodes = root.findAccessibilityNodeInfosByViewId(viewId)
-            if (nodes.isNotEmpty()) {
+            if (!nodes.isNullOrEmpty()) {
                 for (node in nodes) {
                     if (performClickOnNode(node, packageName, "ViewId匹配: $viewId")) {
                         return
@@ -67,10 +80,9 @@ class PureGuardAccessibilityService : AccessibilityService() {
         // 2. 检索常用文本关键字 (跳过、关闭、继续播放短剧等)
         for (keyword in COMMON_SKIP_TEXT_KEYWORDS) {
             val nodes = root.findAccessibilityNodeInfosByText(keyword)
-            if (nodes.isNotEmpty()) {
+            if (!nodes.isNullOrEmpty()) {
                 for (node in nodes) {
                     val nodeText = node.text?.toString() ?: node.contentDescription?.toString() ?: ""
-                    // 排除提示文字例如「观看视频后跳过」，优先匹配「跳过」、「关闭」操作按钮
                     if (isActionableSkipText(nodeText)) {
                         if (performClickOnNode(node, packageName, "文本匹配: $nodeText")) {
                             return
@@ -80,8 +92,8 @@ class PureGuardAccessibilityService : AccessibilityService() {
             }
         }
 
-        // 3. 递归检索黑屏倒计时结束或仅有图标的关闭按钮 (例如右上角的小叉叉或者 contentDescription="关闭")
-        inspectRecursive(root, packageName)
+        // 3. 浅层递归检索黑屏倒计时结束或仅有图标的关闭按钮 (限制最大深度为 5，防卡顿与栈深开销)
+        inspectRecursive(root, packageName, 0)
     }
 
     private fun isActionableSkipText(text: String): Boolean {
@@ -95,8 +107,8 @@ class PureGuardAccessibilityService : AccessibilityService() {
         return false
     }
 
-    private fun inspectRecursive(node: AccessibilityNodeInfo?, packageName: String): Boolean {
-        if (node == null) return false
+    private fun inspectRecursive(node: AccessibilityNodeInfo?, packageName: String, depth: Int): Boolean {
+        if (node == null || depth > 5) return false
 
         val desc = node.contentDescription?.toString() ?: ""
         val text = node.text?.toString() ?: ""
@@ -109,17 +121,19 @@ class PureGuardAccessibilityService : AccessibilityService() {
             }
         }
 
-        // 识别穿山甲/穿山甲激励视频倒计时结束后的特定节点
+        // 识别穿山甲/激励视频倒计时结束后的特征节点
         if (viewId.contains("close", ignoreCase = true) || viewId.contains("skip", ignoreCase = true)) {
-            if (performClickOnNode(node, packageName, "节点特征匹配: $viewId")) {
+            if (performClickOnNode(node, packageName, "特征匹配: $viewId")) {
                 return true
             }
         }
 
-        for (i in 0 until node.childCount) {
+        val childCount = node.childCount
+        for (i in 0 until childCount) {
             val child = node.getChild(i)
-            if (inspectRecursive(child, packageName)) {
-                return true
+            if (child != null) {
+                val matched = inspectRecursive(child, packageName, depth + 1)
+                if (matched) return true
             }
         }
         return false

@@ -21,7 +21,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.nio.ByteBuffer
 
 class LocalDnsVpnService : VpnService() {
 
@@ -98,21 +97,21 @@ class LocalDnsVpnService : VpnService() {
         val descriptor = vpnInterface?.fileDescriptor ?: return
         val inputStream = FileInputStream(descriptor)
         val outputStream = FileOutputStream(descriptor)
-        val packet = ByteBuffer.allocate(32767)
+        // 标准 DNS UDP 报文 MTU 通常不超过 1500，分配 4096 字节足够容纳全部 DNS 数据并减少内存占用
+        val buffer = ByteArray(4096)
 
         try {
             while (serviceScope.isActive && _isRunning.value) {
-                val length = inputStream.read(packet.array())
+                val length = inputStream.read(buffer)
                 if (length > 0) {
-                    val domain = extractDnsQueryDomain(packet.array(), length)
+                    val domain = extractDnsQueryDomain(buffer, length)
                     if (!domain.isNullOrBlank()) {
                         val blocked = isDomainBlocked?.invoke(domain) ?: false
                         onDomainInspected?.invoke(domain)
                         if (blocked) {
-                            sendBlockedDnsResponse(outputStream, packet.array(), length)
+                            sendBlockedDnsResponse(outputStream, buffer, length)
                         }
                     }
-                    packet.clear()
                 }
             }
         } catch (_: Exception) {
@@ -127,34 +126,44 @@ class LocalDnsVpnService : VpnService() {
     }
 
     /**
-     * 解析 IPv4 UDP 53 端口的 DNS 查询报文，提取 QNAME 域名
+     * 高性能解析 IPv4 UDP 53 端口的 DNS 查询报文，提取 QNAME 域名。
+     * 使用 StringBuilder 原地解析与 US_ASCII 解码，杜绝频繁 GC 抖动。
      */
     fun extractDnsQueryDomain(rawPacket: ByteArray, length: Int): String? {
+        // Fast-fail 极速前置检查
         if (length < 40) return null
+        // 校验 IPv4
         val version = (rawPacket[0].toInt() ushr 4) and 0x0F
         if (version != 4) return null
-        val protocol = rawPacket[9].toInt() and 0xFF
-        if (protocol != 17) return null // 17 = UDP
+        // 校验 UDP 协议号 (17)
+        if ((rawPacket[9].toInt() and 0xFF) != 17) return null
 
         val ipHeaderLength = (rawPacket[0].toInt() and 0x0F) * 4
         if (length < ipHeaderLength + 8 + 12) return null
 
+        // 目的端口必须为 53 (DNS)
         val dstPort = ((rawPacket[ipHeaderLength + 2].toInt() and 0xFF) shl 8) or
             (rawPacket[ipHeaderLength + 3].toInt() and 0xFF)
         if (dstPort != 53) return null
 
-        var offset = ipHeaderLength + 8 + 12 // IP Header + UDP Header + DNS Header
-        val parts = mutableListOf<String>()
+        var offset = ipHeaderLength + 8 + 12 // IP 头 + UDP 头 + DNS 头
+        val sb = StringBuilder(64)
         while (offset < length) {
             val labelLen = rawPacket[offset].toInt() and 0xFF
             if (labelLen == 0) break
+            // RFC 1035: Label 长度最大为 63
+            if (labelLen > 63) return null
             offset++
             if (offset + labelLen > length) return null
-            val label = String(rawPacket, offset, labelLen, Charsets.UTF_8)
-            parts.add(label)
+
+            if (sb.isNotEmpty()) {
+                sb.append('.')
+            }
+            // 域名字符均为 ASCII，US_ASCII 比 UTF-8 更快且无多余内存消耗
+            sb.append(String(rawPacket, offset, labelLen, java.nio.charset.StandardCharsets.US_ASCII))
             offset += labelLen
         }
-        return if (parts.isNotEmpty()) parts.joinToString(".") else null
+        return if (sb.isNotEmpty()) sb.toString() else null
     }
 
     /**

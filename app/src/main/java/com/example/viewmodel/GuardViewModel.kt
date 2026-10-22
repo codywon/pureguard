@@ -40,7 +40,24 @@ class GuardViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(GuardUiState())
     val uiState: StateFlow<GuardUiState> = _uiState.asStateFlow()
 
+    // 高性能 DNS 规则哈希索引与 LRU 评估缓存
+    private val ruleLock = Any()
+    private val exactRuleMap = mutableMapOf<String, DnsRule>()
+    private val patternRules = mutableListOf<DnsRule>()
+    private val domainEvaluationLru = object : java.util.LinkedHashMap<String, DnsRule?>(128, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, DnsRule?>?): Boolean {
+            return size > 256
+        }
+    }
+
+    private val timeFormatter = object : ThreadLocal<SimpleDateFormat>() {
+        override fun initialValue(): SimpleDateFormat {
+            return SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
+        }
+    }
+
     init {
+        rebuildDnsRuleIndex(_uiState.value.dnsRules)
         LocalDnsVpnService.onDomainInspected = { domain ->
             evaluateDnsQuery(domain)
         }
@@ -52,12 +69,60 @@ class GuardViewModel : ViewModel() {
         }
     }
 
-    fun isDnsDomainBlocked(domain: String): Boolean {
-        val clean = domain.trim().lowercase(Locale.ROOT)
-        val state = _uiState.value
-        return state.dnsRules.any { rule ->
-            rule.isEnabled && (clean == rule.domainPattern || clean.endsWith(".${rule.domainPattern}") || clean.contains(rule.domainPattern))
+    private fun rebuildDnsRuleIndex(rules: List<DnsRule>) {
+        synchronized(ruleLock) {
+            exactRuleMap.clear()
+            patternRules.clear()
+            domainEvaluationLru.clear()
+            for (rule in rules) {
+                if (!rule.isEnabled) continue
+                val pat = rule.domainPattern.trim().lowercase(Locale.ROOT)
+                if (pat.contains("*") || pat.contains("/")) {
+                    patternRules.add(rule.copy(domainPattern = pat))
+                } else {
+                    exactRuleMap[pat] = rule
+                }
+            }
         }
+    }
+
+    private fun findMatchingDnsRule(domain: String): DnsRule? {
+        val clean = domain.trim().lowercase(Locale.ROOT)
+        if (clean.isEmpty()) return null
+
+        synchronized(ruleLock) {
+            if (domainEvaluationLru.containsKey(clean)) {
+                return domainEvaluationLru[clean]
+            }
+
+            // 1. O(1) 逐级子域名与根域名哈希查找 (如 a.b.zijieapi.com -> 依次匹配 a.b.zijieapi.com, b.zijieapi.com, zijieapi.com)
+            var current = clean
+            while (current.isNotEmpty()) {
+                val match = exactRuleMap[current]
+                if (match != null) {
+                    domainEvaluationLru[clean] = match
+                    return match
+                }
+                val dotIndex = current.indexOf('.')
+                if (dotIndex < 0 || dotIndex >= current.length - 1) break
+                current = current.substring(dotIndex + 1)
+            }
+
+            // 2. 包含/通配规则回退检索
+            for (rule in patternRules) {
+                if (clean.contains(rule.domainPattern)) {
+                    domainEvaluationLru[clean] = rule
+                    return rule
+                }
+            }
+
+            domainEvaluationLru[clean] = null
+            return null
+        }
+    }
+
+    fun isDnsDomainBlocked(domain: String): Boolean {
+        return findMatchingDnsRule(domain) != null
     }
 
     fun updateAccessibilityStatus(context: Context) {
@@ -97,11 +162,11 @@ class GuardViewModel : ViewModel() {
 
     fun toggleDnsRule(ruleId: String) {
         _uiState.update { state ->
-            state.copy(
-                dnsRules = state.dnsRules.map {
-                    if (it.id == ruleId) it.copy(isEnabled = !it.isEnabled) else it
-                }
-            )
+            val updatedRules = state.dnsRules.map {
+                if (it.id == ruleId) it.copy(isEnabled = !it.isEnabled) else it
+            }
+            rebuildDnsRuleIndex(updatedRules)
+            state.copy(dnsRules = updatedRules)
         }
     }
 
@@ -116,7 +181,9 @@ class GuardViewModel : ViewModel() {
             isEnabled = true
         )
         _uiState.update { state ->
-            state.copy(dnsRules = listOf(newRule) + state.dnsRules)
+            val updatedRules = listOf(newRule) + state.dnsRules
+            rebuildDnsRuleIndex(updatedRules)
+            state.copy(dnsRules = updatedRules)
         }
     }
 
@@ -161,10 +228,7 @@ class GuardViewModel : ViewModel() {
 
     fun evaluateDnsQuery(domain: String): Boolean {
         val clean = domain.trim().lowercase(Locale.ROOT)
-        val state = _uiState.value
-        val matchedRule = state.dnsRules.firstOrNull { rule ->
-            rule.isEnabled && (clean == rule.domainPattern || clean.endsWith(".${rule.domainPattern}") || clean.contains(rule.domainPattern))
-        }
+        val matchedRule = findMatchingDnsRule(clean)
 
         val now = currentTimestamp()
         return if (matchedRule != null) {
@@ -418,8 +482,7 @@ class GuardViewModel : ViewModel() {
     }
 
     private fun currentTimestamp(): String {
-        val sdf = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
-        return sdf.format(Date())
+        return timeFormatter.get()?.format(Date()) ?: System.currentTimeMillis().toString()
     }
 
     companion object {
