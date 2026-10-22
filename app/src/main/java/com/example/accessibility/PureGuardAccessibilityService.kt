@@ -48,42 +48,75 @@ class PureGuardAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * 超长行程强力 Fling 向上滑动手势 + ViewPager 原生 ACTION_SCROLL_FORWARD 联动：
-     * 1. 尝试直接调用 ViewPager (dtd / l0) 的原生翻页 action，零阻尼秒切；
+     * 深度穿透全量可滚动容器（包括匿名 RecyclerView 和内层 ViewPager）：
+     * 在触摸手势被短剧广告拦截锁定的 5 秒期间，
+     * 原生 AccessibilityAction ACTION_SCROLL_FORWARD / ACTION_PAGE_DOWN 不受 dispatchTouchEvent 拦截！
+     * 自内而外逐层触发，实现 0 秒穿透倒计时直接翻页！
+     */
+    private fun performForceScrollForward(root: AccessibilityNodeInfo, packageName: String, reason: String): Boolean {
+        var success = false
+        val scrollableNodes = mutableListOf<AccessibilityNodeInfo>()
+
+        fun collectScrollables(node: AccessibilityNodeInfo, depth: Int) {
+            if (depth > 12) return
+            if (node.isScrollable) {
+                scrollableNodes.add(node)
+            }
+            for (i in 0 until node.childCount) {
+                val child = node.getChild(i) ?: continue
+                collectScrollables(child, depth + 1)
+            }
+        }
+
+        try {
+            collectScrollables(root, 0)
+            // 逆序排列：优先执行最内层的 RecyclerView，直接驱动 LayoutManager 换页
+            for (node in scrollableNodes.reversed()) {
+                val scrollOk = node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                var pageOk = false
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    pageOk = node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_PAGE_DOWN.id)
+                }
+                if (scrollOk || pageOk) {
+                    val id = node.viewIdResourceName ?: node.className?.toString() ?: "scrollable"
+                    Log.i(TAG, "[$packageName] 成功通过原生无障碍指令穿透翻页 ($id): scroll=$scrollOk, page=$pageOk")
+                    success = true
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "执行原生穿透滚动异常: ${e.message}")
+        }
+
+        if (success) {
+            val now = System.currentTimeMillis()
+            lastSwipeTime = now
+            lastClickTime = now
+            onNodeClicked?.invoke(packageName, "0秒穿透翻页 · 绕过倒计时", reason)
+        }
+        return success
+    }
+
+    /**
+     * 超长行程强力 Fling 向上滑动手势 + 全容器原生 ACTION_SCROLL_FORWARD 穿透联动：
+     * 1. 深度遍历全层级可滚动容器（包括无 ID 的 RecyclerView），自内向外注入原生换页指令；
      * 2. 起点 86% 屏幕高度，终点直达 8% 屏幕高度，行程高达 78% 屏幕高度（小米17真机超 2000px）；
      * 3. 150ms 超高速抛掷，赋予 ViewPager 充沛动量，彻底击穿穿山甲广告卡片的翻页阻尼阈值，杜绝回弹！
      */
     private fun performSwipeUp(packageName: String, reason: String, root: AccessibilityNodeInfo? = null): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
         val now = System.currentTimeMillis()
-        if (now - lastSwipeTime < 350L) {
+        if (now - lastSwipeTime < 250L) {
             return false
         }
 
-        // 1. 原生 ViewPager 翻页指令尝试
+        // 1. 原生全容器穿透滚动尝试（绕过 5 秒手势锁定）
+        var forceScrolled = false
         if (root != null) {
-            try {
-                val scrollableContainers = listOf("com.phoenix.read:id/dtd", "com.phoenix.read:id/l0")
-                for (id in scrollableContainers) {
-                    val nodes = root.findAccessibilityNodeInfosByViewId(id)
-                    if (!nodes.isNullOrEmpty()) {
-                        for (node in nodes) {
-                            if (node.isScrollable && node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
-                                Log.i(TAG, "[$packageName] 成功通过 ViewPager ACTION_SCROLL_FORWARD 翻页: $id")
-                                lastSwipeTime = now
-                                lastClickTime = now
-                                onNodeClicked?.invoke(packageName, "原生翻页 · 自动划过广告", reason)
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "尝试 ACTION_SCROLL_FORWARD 异常: ${e.message}")
-            }
+            forceScrolled = performForceScrollForward(root, packageName, reason)
         }
 
         // 2. 超长行程 Fling 手势抛掷
-        return try {
+        val gestureResult = try {
             val displayMetrics = resources.displayMetrics
             val width = displayMetrics.widthPixels.toFloat()
             val height = displayMetrics.heightPixels.toFloat()
@@ -125,13 +158,16 @@ class PureGuardAccessibilityService : AccessibilityService() {
             Log.e(TAG, "执行上滑手势异常: ${e.message}")
             false
         }
+
+        return forceScrolled || gestureResult
     }
 
     private fun scheduleAdSwipeRetry(packageName: String, reason: String) {
         if (swipeRetryJob?.isActive == true) return
         swipeRetryJob = serviceScope.launch {
-            for (i in 1..8) {
-                delay(500L)
+            // 以 250ms 高频密集穿刺，在 3 秒内尝试 12 次，一旦有任何瞬态解除锁定瞬间切走
+            for (i in 1..12) {
+                delay(250L)
                 val currentRoot = rootInActiveWindow ?: continue
                 val hasAq7 = !currentRoot.findAccessibilityNodeInfosByViewId("com.phoenix.read:id/aq7").isNullOrEmpty()
                 val hasApt = !currentRoot.findAccessibilityNodeInfosByViewId("com.phoenix.read:id/apt").isNullOrEmpty()
@@ -140,8 +176,8 @@ class PureGuardAccessibilityService : AccessibilityService() {
 
                 val isStillOnAd = (hasAq7 || hasApt) || (hasAd && !hasSelect)
                 if (isStillOnAd) {
-                    Log.i(TAG, "[$packageName] 广告卡片依然存在 (第 $i 次重试倒计时解锁翻页)，再次执行强力上滑")
-                    performSwipeUp(packageName, "$reason (重试 $i)", currentRoot)
+                    Log.i(TAG, "[$packageName] 广告卡片依然存在 (第 $i 次极速穿刺)，再次执行穿透翻页与上滑")
+                    performSwipeUp(packageName, "$reason (极速重试 $i)", currentRoot)
                 } else {
                     Log.i(TAG, "[$packageName] 广告卡片已消失，短剧已成功恢复播放，停止重试")
                     break
