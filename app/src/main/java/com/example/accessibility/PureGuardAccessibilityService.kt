@@ -31,6 +31,31 @@ class PureGuardAccessibilityService : AccessibilityService() {
     private var lastInspectTime = 0L
     private var lastSwipeTime = 0L
     private var swipeRetryJob: Job? = null
+    @Volatile
+    private var isGesturing = false
+
+    private fun isHongguoPackage(pkg: String): Boolean {
+        return pkg == "com.phoenix.read" || pkg == "com.dragon.read"
+    }
+
+    private fun cancelAdRetry() {
+        if (swipeRetryJob?.isActive == true) {
+            Log.i(TAG, "熔断：离开红果短剧或离开播放页，立即彻底终止广告滑动任务")
+            swipeRetryJob?.cancel()
+            swipeRetryJob = null
+        }
+    }
+
+    /**
+     * 严格判断是否在短剧播放器界面：
+     * 必须存在短剧 ViewPager (dtd) 或底栏上滑 ID (aq7/apt) 或上滑双箭头 (aq6)
+     */
+    private fun isInDramaPlayer(root: AccessibilityNodeInfo): Boolean {
+        return !root.findAccessibilityNodeInfosByViewId("com.phoenix.read:id/dtd").isNullOrEmpty() ||
+            !root.findAccessibilityNodeInfosByViewId("com.phoenix.read:id/aq7").isNullOrEmpty() ||
+            !root.findAccessibilityNodeInfosByViewId("com.phoenix.read:id/apt").isNullOrEmpty() ||
+            !root.findAccessibilityNodeInfosByViewId("com.phoenix.read:id/aq6").isNullOrEmpty()
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -97,26 +122,41 @@ class PureGuardAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * 超长行程强力 Fling 向上滑动手势 + 全容器原生 ACTION_SCROLL_FORWARD 穿透联动：
-     * 1. 深度遍历全层级可滚动容器（包括无 ID 的 RecyclerView），自内向外注入原生换页指令；
-     * 2. 起点 86% 屏幕高度，终点直达 8% 屏幕高度，行程高达 78% 屏幕高度（小米17真机超 2000px）；
-     * 3. 150ms 超高速抛掷，赋予 ViewPager 充沛动量，彻底击穿穿山甲广告卡片的翻页阻尼阈值，杜绝回弹！
+     * 严密封闭的单次超长行程 Fling 向上滑动手势：
+     * 1. 严格检查必须在红果短剧前台，且必须在短剧播放器界面；
+     * 2. 具备互斥锁与充足冷却时间，严禁并发，绝不狂甩机关枪手势；
+     * 3. 行程高达 78% 屏幕高度，彻底击穿广告卡片防滑阻尼，杜绝回弹。
      */
     private fun performSwipeUp(packageName: String, reason: String, root: AccessibilityNodeInfo? = null): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
-        val now = System.currentTimeMillis()
-        if (now - lastSwipeTime < 250L) {
+
+        // 铁律 1：严禁在非红果应用中注入任何手势！
+        if (!isHongguoPackage(packageName)) {
+            Log.w(TAG, "拒绝在非红果应用中执行手势: $packageName")
+            cancelAdRetry()
             return false
         }
 
-        // 1. 原生全容器穿透滚动尝试（绕过 5 秒手势锁定）
-        var forceScrolled = false
-        if (root != null) {
-            forceScrolled = performForceScrollForward(root, packageName, reason)
+        // 铁律 2：如果提供了 root，必须验证是否在短剧播放界面，严禁在红果其它页面乱滑！
+        if (root != null && !isInDramaPlayer(root)) {
+            Log.w(TAG, "拒绝在非短剧播放界面执行手势")
+            cancelAdRetry()
+            return false
         }
 
-        // 2. 超长行程 Fling 手势抛掷
-        val gestureResult = try {
+        val now = System.currentTimeMillis()
+        if (now - lastSwipeTime < 600L || isGesturing) {
+            return false
+        }
+
+        // 原生滚动指令尝试
+        if (root != null) {
+            performForceScrollForward(root, packageName, reason)
+        }
+
+        // 超长行程 Fling 手势抛掷
+        return try {
+            isGesturing = true
             val displayMetrics = resources.displayMetrics
             val width = displayMetrics.widthPixels.toFloat()
             val height = displayMetrics.heightPixels.toFloat()
@@ -131,16 +171,18 @@ class PureGuardAccessibilityService : AccessibilityService() {
                 lineTo(endX, endY)
             }
 
-            val stroke = GestureDescription.StrokeDescription(swipePath, 0L, 150L)
+            val stroke = GestureDescription.StrokeDescription(swipePath, 0L, 160L)
             val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
             val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
                 override fun onCompleted(gestureDescription: GestureDescription?) {
                     super.onCompleted(gestureDescription)
-                    Log.i(TAG, "超长 Fling 上滑手势分发成功完成: $reason")
+                    isGesturing = false
+                    Log.i(TAG, "超长 Fling 上滑手势成功完成: $reason")
                 }
                 override fun onCancelled(gestureDescription: GestureDescription?) {
                     super.onCancelled(gestureDescription)
+                    isGesturing = false
                     Log.w(TAG, "上滑手势被系统取消: $reason")
                 }
             }, null)
@@ -152,34 +194,38 @@ class PureGuardAccessibilityService : AccessibilityService() {
                 onNodeClicked?.invoke(packageName, "极速手势 · 自动划过黑屏广告", reason)
                 true
             } else {
+                isGesturing = false
                 false
             }
         } catch (e: Exception) {
+            isGesturing = false
             Log.e(TAG, "执行上滑手势异常: ${e.message}")
             false
         }
-
-        return forceScrolled || gestureResult
     }
 
     private fun scheduleAdSwipeRetry(packageName: String, reason: String) {
+        if (!isHongguoPackage(packageName)) return
         if (swipeRetryJob?.isActive == true) return
         swipeRetryJob = serviceScope.launch {
-            // 以 250ms 高频密集穿刺，在 3 秒内尝试 12 次，一旦有任何瞬态解除锁定瞬间切走
-            for (i in 1..12) {
-                delay(250L)
-                val currentRoot = rootInActiveWindow ?: continue
+            // 每隔 1000ms 探测一次（最多重试 4 次），绝不搞并发狂刷，等待倒计时结束瞬间划过
+            for (i in 1..4) {
+                delay(1000L)
+                val currentRoot = rootInActiveWindow ?: break
+                val currentPkg = currentRoot.packageName?.toString() ?: ""
+                // 一旦离开红果短剧或离开播放页，立即彻底自毁退出！
+                if (!isHongguoPackage(currentPkg) || !isInDramaPlayer(currentRoot)) {
+                    Log.i(TAG, "[$packageName] 已离开短剧播放界面，重试任务自毁")
+                    break
+                }
+
                 val hasAq7 = !currentRoot.findAccessibilityNodeInfosByViewId("com.phoenix.read:id/aq7").isNullOrEmpty()
                 val hasApt = !currentRoot.findAccessibilityNodeInfosByViewId("com.phoenix.read:id/apt").isNullOrEmpty()
-                val hasAd = !currentRoot.findAccessibilityNodeInfosByText("广告").isNullOrEmpty()
-                val hasSelect = !currentRoot.findAccessibilityNodeInfosByText("选集").isNullOrEmpty()
-
-                val isStillOnAd = (hasAq7 || hasApt) || (hasAd && !hasSelect)
-                if (isStillOnAd) {
-                    Log.i(TAG, "[$packageName] 广告卡片依然存在 (第 $i 次极速穿刺)，再次执行穿透翻页与上滑")
-                    performSwipeUp(packageName, "$reason (极速重试 $i)", currentRoot)
+                if (hasAq7 || hasApt) {
+                    Log.i(TAG, "[$packageName] 广告卡片依然存在 (第 $i 次重试倒计时解锁)，再次执行单次上滑")
+                    performSwipeUp(currentPkg, "$reason (重试 $i)", currentRoot)
                 } else {
-                    Log.i(TAG, "[$packageName] 广告卡片已消失，短剧已成功恢复播放，停止重试")
+                    Log.i(TAG, "[$packageName] 广告已成功划走，停止重试")
                     break
                 }
             }
@@ -189,15 +235,17 @@ class PureGuardAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null || !_autoSkipEnabled.value) return
 
+        val packageName = event.packageName?.toString() ?: ""
+        // 关键守卫 1：一旦离开红果短剧（包括桌面、微信等），立即彻底熔断手势与重试！
+        if (!isHongguoPackage(packageName)) {
+            cancelAdRetry()
+            return
+        }
+
         val eventType = event.eventType
         if (eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
             eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
         ) {
-            return
-        }
-
-        val packageName = event.packageName?.toString() ?: ""
-        if (packageName == applicationContext.packageName) {
             return
         }
 
@@ -211,8 +259,12 @@ class PureGuardAccessibilityService : AccessibilityService() {
         }
         lastInspectTime = now
 
-        // 优先使用活跃窗口根节点，若为 null 则回退使用事件源节点，杜绝全屏 SDK 浮层下 root 为空的漏检
         val rootNode = rootInActiveWindow ?: event.source ?: return
+        // 关键守卫 2：如果在红果短剧内部，但不在短剧播放界面（如我的、书架、详情页），立即熔断重试并返回！
+        if (!isInDramaPlayer(rootNode)) {
+            cancelAdRetry()
+            return
+        }
 
         try {
             findAndClickSkipOrCloseNode(rootNode, packageName)
