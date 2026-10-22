@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">PureGuard</string>
+    <string name="vpn_service_label">PureGuard DNS 过滤服务</string>
+    <string name="tab_dashboard">总览</string>
+    <string name="tab_sandbox">沙盒测试</string>
+    <string name="tab_dns_rules">DNS 规则</string>
+    <string name="tab_gkd_builder">选择器</string>
+</resources>

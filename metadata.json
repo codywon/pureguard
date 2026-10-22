@@ -1,0 +1,6 @@
+{
+  "name": "PureGuard",
+  "description": "移动端 DNS 流量过滤与 UI 节点规则测试工具",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
