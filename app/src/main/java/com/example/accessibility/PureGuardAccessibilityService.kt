@@ -9,6 +9,7 @@ import android.graphics.Path
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
@@ -30,18 +31,18 @@ class PureGuardAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         _isRunning.value = true
+        Log.i(TAG, "PureGuardAccessibilityService 已与系统建立连接并激活")
     }
 
     /**
      * 高爆发 Fling 向上滑动手势：
-     * 起点避开底部全面屏手势小白条（72% 屏幕高度），终点至 18% 屏幕高度，
-     * 110ms 极速冲刺产生强力惯性，彻底冲破 ViewPager2 广告卡片的滑动阻尼，瞬间切入下一集短剧。
+     * 起点避开底部全面屏手势小白条（70% 屏幕高度），终点至 18% 屏幕高度，
+     * 200ms 持续时间产生充足的 TOUCH_MOVE 采样点，并在 ACTION_UP 时触发标准的 ViewPager2 抛掷翻页。
      */
     private fun performSwipeUp(packageName: String, reason: String): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
         val now = System.currentTimeMillis()
-        // 防抖冷却：500ms 内不重复触发，避免短剧连翻数集
-        if (now - lastSwipeTime < 500L) {
+        if (now - lastSwipeTime < 600L) {
             return false
         }
 
@@ -51,25 +52,31 @@ class PureGuardAccessibilityService : AccessibilityService() {
             val height = displayMetrics.heightPixels.toFloat()
 
             val startX = width * 0.50f
-            val startY = height * 0.68f
+            val startY = height * 0.70f
             val endX = width * 0.50f
-            val endY = height * 0.22f
+            val endY = height * 0.18f
 
             val swipePath = Path().apply {
                 moveTo(startX, startY)
                 lineTo(endX, endY)
             }
 
-            val stroke = GestureDescription.StrokeDescription(swipePath, 0L, 100L)
+            val stroke = GestureDescription.StrokeDescription(swipePath, 0L, 200L)
             val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
-            val success = dispatchGesture(gesture, object : GestureResultCallback() {
+            val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
                 override fun onCompleted(gestureDescription: GestureDescription?) {
                     super.onCompleted(gestureDescription)
+                    Log.i(TAG, "上滑手势分发成功完成: $reason")
+                }
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    super.onCancelled(gestureDescription)
+                    Log.w(TAG, "上滑手势被系统取消: $reason")
                 }
             }, null)
 
-            if (success) {
+            Log.i(TAG, "提交上滑手势: pkg=$packageName, reason=$reason, dispatched=$dispatched")
+            if (dispatched) {
                 lastSwipeTime = now
                 lastClickTime = now
                 onNodeClicked?.invoke(packageName, "极速手势 · 自动划过黑屏广告", reason)
@@ -77,7 +84,8 @@ class PureGuardAccessibilityService : AccessibilityService() {
             } else {
                 false
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "执行上滑手势异常: ${e.message}")
             false
         }
     }
@@ -92,28 +100,28 @@ class PureGuardAccessibilityService : AccessibilityService() {
             return
         }
 
-        val now = System.currentTimeMillis()
-        // 1. 点击去抖动：至少间隔 350ms，避免连击导致误触后续正常界面
-        if (now - lastClickTime < 350L) {
-            return
-        }
-
-        // 2. 高频内容变动节流：TYPE_WINDOW_CONTENT_CHANGED 至少间隔 180ms 检测一次，兼顾极限灵敏度与低能耗
-        if (eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED && (now - lastInspectTime < 180L)) {
-            return
-        }
-        lastInspectTime = now
-
         val packageName = event.packageName?.toString() ?: ""
         if (packageName == applicationContext.packageName) {
             return
         }
 
-        val rootNode = rootInActiveWindow ?: return
+        val now = System.currentTimeMillis()
+        if (now - lastClickTime < 300L) {
+            return
+        }
+
+        if (eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED && (now - lastInspectTime < 150L)) {
+            return
+        }
+        lastInspectTime = now
+
+        // 优先使用活跃窗口根节点，若为 null 则回退使用事件源节点，杜绝全屏 SDK 浮层下 root 为空的漏检
+        val rootNode = rootInActiveWindow ?: event.source ?: return
 
         try {
             findAndClickSkipOrCloseNode(rootNode, packageName)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "处理无障碍节点异常: ${e.message}")
         }
     }
 
@@ -123,15 +131,15 @@ class PureGuardAccessibilityService : AccessibilityService() {
             packageName.startsWith("com.phoenix.") ||
             packageName.startsWith("com.dragon.")
 
-        // 1. 核心针对短剧应用（红果免费短剧）：检索“上滑继续观看”等关键词，自动执行手势切集
+        // 1. 针对短剧应用（红果免费短剧）：检索“上滑继续观看短剧”等关键词，自动执行手势切集
         for (keyword in SWIPE_SEARCH_KEYWORDS) {
             val nodes = root.findAccessibilityNodeInfosByText(keyword)
             if (!nodes.isNullOrEmpty()) {
                 for (node in nodes) {
                     val nodeText = node.text?.toString() ?: node.contentDescription?.toString() ?: ""
                     if (isSwipeUpHint(nodeText)) {
-                        // 绝不点击广告卡片提示，直接注入强力高速 Fling 上滑手势翻页
-                        if (performSwipeUp(packageName, "命中上滑关键词: $nodeText")) {
+                        Log.i(TAG, "[$packageName] 识别到上滑切集提示: $nodeText")
+                        if (performSwipeUp(packageName, "命中提示: $nodeText")) {
                             return
                         }
                     }
@@ -139,7 +147,7 @@ class PureGuardAccessibilityService : AccessibilityService() {
             }
         }
 
-        // 2. 按官方红果短剧及主流广告 SDK 关闭/跳过 ViewId 检索（O(1) 瞬时命中）
+        // 2. 按官方红果短剧及主流广告 SDK 关闭/跳过 ViewId 检索
         for (viewId in COMMON_AD_CLOSE_VIEW_IDS) {
             val nodes = root.findAccessibilityNodeInfosByViewId(viewId)
             if (!nodes.isNullOrEmpty()) {
@@ -166,23 +174,18 @@ class PureGuardAccessibilityService : AccessibilityService() {
             }
         }
 
-        // 4. 若为红果短剧且检测到广告黑屏/卡片特征，执行深度浅层检查
+        // 4. 若为红果短剧，检测纯广告标签或倒计时卡片
         if (isHongguo) {
             inspectHongguoAdCard(root, packageName)
         }
     }
 
     private fun inspectHongguoAdCard(root: AccessibilityNodeInfo, packageName: String): Boolean {
-        // 检索是否有“广告”标签且非正常短剧选集界面
         val adLabelNodes = root.findAccessibilityNodeInfosByText("广告")
         if (!adLabelNodes.isNullOrEmpty()) {
-            // 校验界面上是否未出现“选集”或“第X集”等播放器主控
             val episodeNodes = root.findAccessibilityNodeInfosByText("选集")
             if (episodeNodes.isNullOrEmpty()) {
-                // 属于独立广告展示页或插屏卡片，直接注入上滑或点击关闭
-                for (node in adLabelNodes) {
-                    performClickOnNode(node, packageName, "尝试关闭广告标签")
-                }
+                Log.i(TAG, "[$packageName] 检测到非正片广告卡片，立即注入手势划过")
                 return performSwipeUp(packageName, "短剧广告卡片即时划过")
             }
         }
@@ -193,11 +196,7 @@ class PureGuardAccessibilityService : AccessibilityService() {
         if (text.isBlank()) return false
         val trimmed = text.trim()
         if (trimmed.contains("上滑") || trimmed.contains("向上滑") || trimmed.contains("滑动") || trimmed.contains("赏花")) {
-            if (trimmed.contains("看") || trimmed.contains("继续") || trimmed.contains("剧") ||
-                trimmed.contains("下") || trimmed.contains("跳过") || trimmed.contains("播")
-            ) {
-                return true
-            }
+            return true
         }
         if (trimmed.contains("继续观看") && (trimmed.contains("短剧") || trimmed.contains("剧"))) {
             return true
@@ -227,6 +226,7 @@ class PureGuardAccessibilityService : AccessibilityService() {
             if (clicked) {
                 lastClickTime = System.currentTimeMillis()
                 val targetDesc = node.viewIdResourceName ?: node.text?.toString() ?: node.contentDescription?.toString() ?: "跳过按钮"
+                Log.i(TAG, "[$packageName] 点击节点成功: target=$targetDesc, rule=$ruleName")
                 onNodeClicked?.invoke(packageName, targetDesc, ruleName)
                 return true
             }
@@ -236,15 +236,19 @@ class PureGuardAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {
         _isRunning.value = false
+        Log.w(TAG, "PureGuardAccessibilityService 中断")
     }
 
     override fun onDestroy() {
         _isRunning.value = false
         serviceScope.cancel()
+        Log.i(TAG, "PureGuardAccessibilityService 销毁")
         super.onDestroy()
     }
 
     companion object {
+        const val TAG = "PureGuard-A11y"
+
         private val _isRunning = MutableStateFlow(false)
         val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
@@ -309,17 +313,18 @@ class PureGuardAccessibilityService : AccessibilityService() {
             context.startActivity(intent)
         }
 
-        // 短词索引库，避免长句匹配失效
         private val SWIPE_SEARCH_KEYWORDS = listOf(
             "上滑",
             "滑动",
             "继续观看",
             "赏花",
             "下一集",
-            "下一部"
+            "下一部",
+            "继续看",
+            "可上滑",
+            "看短剧"
         )
 
-        // 红果短剧正版 (com.phoenix.read) 及穿山甲常见广告关闭 ViewId
         private val COMMON_AD_CLOSE_VIEW_IDS = listOf(
             "com.phoenix.read:id/tt_video_ad_close_layout",
             "com.phoenix.read:id/tt_reward_full_count_down",
