@@ -205,6 +205,15 @@ fun DashboardScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        if (!uiState.isAccessibilityRunning) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "💡 小米/澎湃OS提示：若提示‘受限设置’，请点击右侧【解除受限】，在详情页右上角【三个点】勾选【允许受限设置】即可开启。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFFDE68A),
+                                fontSize = 11.sp
+                            )
+                        }
                     }
                     if (!uiState.isAccessibilityRunning) {
                         Spacer(modifier = Modifier.width(10.dp))
