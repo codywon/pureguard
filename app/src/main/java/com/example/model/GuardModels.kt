@@ -76,5 +76,13 @@ enum class SimulatedAdType(
         buttonText = "关闭",
         adDomain = "mi.gdt.qq.com",
         durationSec = 1
+    ),
+    FEED_SWIPE_AD(
+        title = "信息流黑屏广告",
+        subtitle = "倒计时 8s · 提示上滑继续观看",
+        viewId = "com.dragon.read:id/swipe_hint_container",
+        buttonText = "上滑继续观看",
+        adDomain = "pangolin-sdk-toutiao.com",
+        durationSec = 8
     )
 }

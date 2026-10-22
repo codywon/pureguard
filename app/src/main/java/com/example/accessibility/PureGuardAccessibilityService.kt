@@ -2,9 +2,12 @@ package com.example.accessibility
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.accessibilityservice.GestureDescription
 import android.content.Context
 import android.content.Intent
+import android.graphics.Path
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
@@ -24,10 +27,57 @@ class PureGuardAccessibilityService : AccessibilityService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var lastClickTime = 0L
     private var lastInspectTime = 0L
+    private var lastSwipeTime = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         _isRunning.value = true
+    }
+
+    private fun performSwipeUp(packageName: String, reason: String): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        val now = System.currentTimeMillis()
+        // 上滑手势冷却防抖，避免连续触发多次连翻数集
+        if (now - lastSwipeTime < 1200L) {
+            return false
+        }
+
+        return try {
+            val displayMetrics = resources.displayMetrics
+            val width = displayMetrics.widthPixels.toFloat()
+            val height = displayMetrics.heightPixels.toFloat()
+
+            // 模拟自然向上滑动手势：从屏幕 75% 处划向 25% 处，直接划过黑屏广告页
+            val startX = width * 0.5f
+            val startY = height * 0.75f
+            val endX = width * 0.5f
+            val endY = height * 0.25f
+
+            val swipePath = Path().apply {
+                moveTo(startX, startY)
+                lineTo(endX, endY)
+            }
+
+            val stroke = GestureDescription.StrokeDescription(swipePath, 0L, 250L)
+            val gesture = GestureDescription.Builder().addStroke(stroke).build()
+
+            val success = dispatchGesture(gesture, object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    super.onCompleted(gestureDescription)
+                }
+            }, null)
+
+            if (success) {
+                lastSwipeTime = now
+                lastClickTime = now
+                onNodeClicked?.invoke(packageName, "模拟上滑手势 · 翻过黑屏广告", reason)
+                true
+            } else {
+                false
+            }
+        } catch (_: Exception) {
+            false
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -67,7 +117,25 @@ class PureGuardAccessibilityService : AccessibilityService() {
     }
 
     private fun findAndClickSkipOrCloseNode(root: AccessibilityNodeInfo, packageName: String) {
-        // 1. 优先按短剧/穿山甲/优量汇常见关闭和跳过 ViewId 检索（O(1) 索引快速命中）
+        // 1. 核心针对短剧应用：优先检测“上滑继续观看”等黑屏信息流广告提示，自动注入手势翻页
+        for (keyword in COMMON_SWIPE_UP_KEYWORDS) {
+            val nodes = root.findAccessibilityNodeInfosByText(keyword)
+            if (!nodes.isNullOrEmpty()) {
+                for (node in nodes) {
+                    val nodeText = node.text?.toString() ?: node.contentDescription?.toString() ?: ""
+                    if (isSwipeUpHint(nodeText)) {
+                        // 若节点或容器可直接点击，先尝试点击触发
+                        performClickOnNode(node, packageName, "点击上滑提示: $nodeText")
+                        // 注入原生上滑手势，直接划走黑屏广告页，无缝恢复短剧播放
+                        if (performSwipeUp(packageName, "命中上滑关键词: $nodeText")) {
+                            return
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. 按短剧/穿山甲/优量汇常见关闭和跳过 ViewId 检索（O(1) 索引快速命中）
         for (viewId in COMMON_AD_CLOSE_VIEW_IDS) {
             val nodes = root.findAccessibilityNodeInfosByViewId(viewId)
             if (!nodes.isNullOrEmpty()) {
@@ -79,7 +147,7 @@ class PureGuardAccessibilityService : AccessibilityService() {
             }
         }
 
-        // 2. 检索常用文本关键字 (跳过、关闭、继续播放短剧等)
+        // 3. 检索常用文本关键字 (跳过、关闭、继续播放短剧等)
         for (keyword in COMMON_SKIP_TEXT_KEYWORDS) {
             val nodes = root.findAccessibilityNodeInfosByText(keyword)
             if (!nodes.isNullOrEmpty()) {
@@ -94,8 +162,21 @@ class PureGuardAccessibilityService : AccessibilityService() {
             }
         }
 
-        // 3. 浅层递归检索黑屏倒计时结束或仅有图标的关闭按钮 (限制最大深度为 5，防卡顿与栈深开销)
+        // 4. 浅层递归检索黑屏倒计时结束、带图标关闭按钮或隐式上滑提示 (限制最大深度为 5，防卡顿)
         inspectRecursive(root, packageName, 0)
+    }
+
+    private fun isSwipeUpHint(text: String): Boolean {
+        if (text.isBlank()) return false
+        val trimmed = text.trim()
+        if (COMMON_SWIPE_UP_KEYWORDS.any { trimmed.contains(it) }) return true
+        if (trimmed.contains("上滑") && (trimmed.contains("看") || trimmed.contains("继续") || trimmed.contains("下") || trimmed.contains("剧") || trimmed.contains("跳过"))) {
+            return true
+        }
+        if (trimmed.contains("滑动") && (trimmed.contains("继续") || trimmed.contains("看") || trimmed.contains("跳过") || trimmed.contains("下"))) {
+            return true
+        }
+        return false
     }
 
     private fun isActionableSkipText(text: String): Boolean {
@@ -115,6 +196,14 @@ class PureGuardAccessibilityService : AccessibilityService() {
         val desc = node.contentDescription?.toString() ?: ""
         val text = node.text?.toString() ?: ""
         val viewId = node.viewIdResourceName ?: ""
+
+        // 识别“上滑继续观看”等滑动提示
+        if (isSwipeUpHint(text) || isSwipeUpHint(desc)) {
+            performClickOnNode(node, packageName, "点击上滑控件: ${text.ifBlank { desc }}")
+            if (performSwipeUp(packageName, "递归命中上滑提示: ${text.ifBlank { desc }}")) {
+                return true
+            }
+        }
 
         // 识别常见的广告关闭 ContentDescription
         if (desc.contains("关闭") || desc.contains("跳过") || desc.equals("close", ignoreCase = true) || desc.equals("skip", ignoreCase = true)) {
@@ -265,6 +354,24 @@ class PureGuardAccessibilityService : AccessibilityService() {
             "关闭广告",
             "×",
             "X"
+        )
+
+        // 短剧信息流全屏广告常见“上滑继续观看”提示词
+        private val COMMON_SWIPE_UP_KEYWORDS = listOf(
+            "上滑继续观看",
+            "上滑继续",
+            "上滑看短剧",
+            "上滑看下一集",
+            "上滑看下一部",
+            "上滑进入下一集",
+            "上滑跳过",
+            "滑动继续观看",
+            "滑动继续",
+            "滑动看短剧",
+            "滑动跳过",
+            "向上滑动",
+            "继续观看",
+            "上滑"
         )
     }
 }

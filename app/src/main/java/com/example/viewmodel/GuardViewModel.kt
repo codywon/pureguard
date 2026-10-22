@@ -581,6 +581,18 @@ class GuardViewModel : ViewModel() {
                 actionDelayMs = 80L,
                 isEnabled = true,
                 hitCount = 1
+            ),
+            SkipSelectorRule(
+                id = "sel_5",
+                name = "信息流上滑划走",
+                targetPackage = "com.dragon.read",
+                activityName = ".plugin.shortseries.ShortSeriesPlayerActivity",
+                selectorExpression = "TextView[text*=\"上滑继续观看\" || text*=\"上滑继续\"][clickable=true]",
+                matchTextKeywords = listOf("上滑继续观看", "上滑继续", "上滑"),
+                matchViewIdKeywords = listOf("swipe_hint_container", "feed_ad_swipe"),
+                actionDelayMs = 50L,
+                isEnabled = true,
+                hitCount = 2
             )
         )
 
