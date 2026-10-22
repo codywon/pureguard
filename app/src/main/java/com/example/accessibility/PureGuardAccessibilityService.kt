@@ -73,59 +73,11 @@ class PureGuardAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * 深度穿透全量可滚动容器（包括匿名 RecyclerView 和内层 ViewPager）：
-     * 在触摸手势被短剧广告拦截锁定的 5 秒期间，
-     * 原生 AccessibilityAction ACTION_SCROLL_FORWARD / ACTION_PAGE_DOWN 不受 dispatchTouchEvent 拦截！
-     * 自内而外逐层触发，实现 0 秒穿透倒计时直接翻页！
-     */
-    private fun performForceScrollForward(root: AccessibilityNodeInfo, packageName: String, reason: String): Boolean {
-        var success = false
-        val scrollableNodes = mutableListOf<AccessibilityNodeInfo>()
-
-        fun collectScrollables(node: AccessibilityNodeInfo, depth: Int) {
-            if (depth > 12) return
-            if (node.isScrollable) {
-                scrollableNodes.add(node)
-            }
-            for (i in 0 until node.childCount) {
-                val child = node.getChild(i) ?: continue
-                collectScrollables(child, depth + 1)
-            }
-        }
-
-        try {
-            collectScrollables(root, 0)
-            // 逆序排列：优先执行最内层的 RecyclerView，直接驱动 LayoutManager 换页
-            for (node in scrollableNodes.reversed()) {
-                val scrollOk = node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-                var pageOk = false
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    pageOk = node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_PAGE_DOWN.id)
-                }
-                if (scrollOk || pageOk) {
-                    val id = node.viewIdResourceName ?: node.className?.toString() ?: "scrollable"
-                    Log.i(TAG, "[$packageName] 成功通过原生无障碍指令穿透翻页 ($id): scroll=$scrollOk, page=$pageOk")
-                    success = true
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "执行原生穿透滚动异常: ${e.message}")
-        }
-
-        if (success) {
-            val now = System.currentTimeMillis()
-            lastSwipeTime = now
-            lastClickTime = now
-            onNodeClicked?.invoke(packageName, "0秒穿透翻页 · 绕过倒计时", reason)
-        }
-        return success
-    }
-
-    /**
-     * 严密封闭的单次超长行程 Fling 向上滑动手势：
+     * 严密封闭的单次垂直超长行程 Fling 向上滑动手势：
      * 1. 严格检查必须在红果短剧前台，且必须在短剧播放器界面；
      * 2. 具备互斥锁与充足冷却时间，严禁并发，绝不狂甩机关枪手势；
-     * 3. 行程高达 78% 屏幕高度，彻底击穿广告卡片防滑阻尼，杜绝回弹。
+     * 3. 严格垂直从 86% -> 8% 高速抛掷，纯净上下滑动，绝不调用任何引发水平右滑的横向无障碍指令；
+     * 4. 行程高达 78% 屏幕高度，彻底击穿广告卡片防滑阻尼，杜绝回弹。
      */
     private fun performSwipeUp(packageName: String, reason: String, root: AccessibilityNodeInfo? = null): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
@@ -147,11 +99,6 @@ class PureGuardAccessibilityService : AccessibilityService() {
         val now = System.currentTimeMillis()
         if (now - lastSwipeTime < 600L || isGesturing) {
             return false
-        }
-
-        // 原生滚动指令尝试
-        if (root != null) {
-            performForceScrollForward(root, packageName, reason)
         }
 
         // 超长行程 Fling 手势抛掷
