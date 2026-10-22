@@ -86,8 +86,8 @@ class GuardViewModel : ViewModel() {
             for (rule in rules) {
                 if (!rule.isEnabled) continue
                 val pat = rule.domainPattern.trim().lowercase(Locale.ROOT)
-                if (pat.contains("*") || pat.contains("/")) {
-                    patternRules.add(rule.copy(domainPattern = pat))
+                if (pat.contains("*") || pat.contains("/") || pat.startsWith("-") || pat.startsWith(".") || pat.contains("ad")) {
+                    patternRules.add(rule.copy(domainPattern = pat.removePrefix("*")))
                 } else {
                     exactRuleMap[pat] = rule
                 }
@@ -519,30 +519,9 @@ class GuardViewModel : ViewModel() {
             ),
             DnsRule(
                 id = "dns_4",
-                domainPattern = "v1-ad.pstatp.com",
+                domainPattern = "-ad.pstatp.com",
                 category = "广告视频流",
-                description = "短剧广告视频 CDN 节点 1",
-                isEnabled = true
-            ),
-            DnsRule(
-                id = "dns_5",
-                domainPattern = "v3-ad.pstatp.com",
-                category = "广告视频流",
-                description = "短剧广告视频 CDN 节点 3",
-                isEnabled = true
-            ),
-            DnsRule(
-                id = "dns_6",
-                domainPattern = "v6-ad.pstatp.com",
-                category = "广告视频流",
-                description = "短剧广告视频 CDN 节点 6",
-                isEnabled = true
-            ),
-            DnsRule(
-                id = "dns_7",
-                domainPattern = "v9-ad.pstatp.com",
-                category = "广告视频流",
-                description = "短剧广告视频 CDN 节点 9",
+                description = "全量短剧广告视频 CDN 节点（彻底封堵重播）",
                 isEnabled = true
             ),
             DnsRule(

@@ -51,16 +51,16 @@ class PureGuardAccessibilityService : AccessibilityService() {
             val height = displayMetrics.heightPixels.toFloat()
 
             val startX = width * 0.50f
-            val startY = height * 0.72f
+            val startY = height * 0.68f
             val endX = width * 0.50f
-            val endY = height * 0.18f
+            val endY = height * 0.22f
 
             val swipePath = Path().apply {
                 moveTo(startX, startY)
                 lineTo(endX, endY)
             }
 
-            val stroke = GestureDescription.StrokeDescription(swipePath, 0L, 110L)
+            val stroke = GestureDescription.StrokeDescription(swipePath, 0L, 100L)
             val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
             val success = dispatchGesture(gesture, object : GestureResultCallback() {
@@ -130,7 +130,7 @@ class PureGuardAccessibilityService : AccessibilityService() {
                 for (node in nodes) {
                     val nodeText = node.text?.toString() ?: node.contentDescription?.toString() ?: ""
                     if (isSwipeUpHint(nodeText)) {
-                        performClickOnNode(node, packageName, "点击上滑提示: $nodeText")
+                        // 绝不点击广告卡片提示，直接注入强力高速 Fling 上滑手势翻页
                         if (performSwipeUp(packageName, "命中上滑关键词: $nodeText")) {
                             return
                         }
