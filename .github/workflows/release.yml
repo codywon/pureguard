@@ -42,34 +42,12 @@ jobs:
         run: chmod +x gradlew
 
       - name: Prepare Keystore & Signing Environment
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "Using keystore from GitHub Secrets"
-            echo "$KEYSTORE_BASE64" | base64 --decode > app/release.jks
-            echo "KEYSTORE_PATH=$GITHUB_WORKSPACE/app/release.jks" >> $GITHUB_ENV
-            echo "STORE_PASSWORD=${KEYSTORE_PASSWORD:-pureguard}" >> $GITHUB_ENV
-            echo "KEY_PASSWORD=${KEY_PASSWORD:-pureguard}" >> $GITHUB_ENV
-            echo "KEY_ALIAS=${KEY_ALIAS:-upload}" >> $GITHUB_ENV
-          else
-            echo "Generating automated release signing keystore"
-            keytool -genkeypair -v -keystore app/release.jks \
-              -alias upload \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -storepass pureguard \
-              -keypass pureguard \
-              -dname "CN=PureGuard, OU=PureGuard, O=PureGuard, L=Unknown, ST=Unknown, C=US"
-            echo "KEYSTORE_PATH=$GITHUB_WORKSPACE/app/release.jks" >> $GITHUB_ENV
-            echo "STORE_PASSWORD=pureguard" >> $GITHUB_ENV
-            echo "KEY_PASSWORD=pureguard" >> $GITHUB_ENV
-            echo "KEY_ALIAS=upload" >> $GITHUB_ENV
-          fi
+          echo "Using repository persistent global release keystore for seamless overwrite updates"
+          echo "KEYSTORE_PATH=$GITHUB_WORKSPACE/app/pureguard_release.jks" >> $GITHUB_ENV
+          echo "STORE_PASSWORD=pureguard123" >> $GITHUB_ENV
+          echo "KEY_PASSWORD=pureguard123" >> $GITHUB_ENV
+          echo "KEY_ALIAS=pureguard" >> $GITHUB_ENV
 
       - name: Build Release APK
         run: |

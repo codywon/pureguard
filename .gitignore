@@ -18,3 +18,4 @@ local.properties
 debug.keystore
 *.keystore
 *.jks
+!app/pureguard_release.jks

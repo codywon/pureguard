@@ -16,29 +16,29 @@ android {
     applicationId = "com.aistudio.pureguard.kxmzqp"
     minSdk = 24
     targetSdk = 36
-    versionCode = 8
-    versionName = "1.0.7"
+    versionCode = 9
+    versionName = "1.0.8"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
-  // Robust signing configuration: uses upload/custom key if available, otherwise falls back gracefully
+  // Persistent global signing key configuration to ensure lifetime overwrite upgrade without -7 error
   signingConfigs {
     create("release") {
-      val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
-      val keystoreFile = file(keystorePath)
-      if (keystoreFile.exists()) {
-        storeFile = keystoreFile
-        storePassword = System.getenv("STORE_PASSWORD") ?: "pureguard"
-        keyAlias = System.getenv("KEY_ALIAS") ?: "upload"
-        keyPassword = System.getenv("KEY_PASSWORD") ?: "pureguard"
+      val persistentKeystore = file("${rootDir}/app/pureguard_release.jks")
+      if (persistentKeystore.exists()) {
+        storeFile = persistentKeystore
+        storePassword = "pureguard123"
+        keyAlias = "pureguard"
+        keyPassword = "pureguard123"
       } else {
-        val debugKeystore = file("${rootDir}/debug.keystore")
-        if (debugKeystore.exists()) {
-          storeFile = debugKeystore
-          storePassword = "android"
-          keyAlias = "androiddebugkey"
-          keyPassword = "android"
+        val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
+        val keystoreFile = file(keystorePath)
+        if (keystoreFile.exists()) {
+          storeFile = keystoreFile
+          storePassword = System.getenv("STORE_PASSWORD") ?: "pureguard123"
+          keyAlias = System.getenv("KEY_ALIAS") ?: "pureguard"
+          keyPassword = System.getenv("KEY_PASSWORD") ?: "pureguard123"
         } else {
           initWith(signingConfigs.getByName("debug"))
         }
