@@ -30,8 +30,17 @@ class PureGuardAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        try {
+            val info = serviceInfo ?: AccessibilityServiceInfo()
+            info.flags = info.flags or
+                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
+                AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
+            serviceInfo = info
+        } catch (_: Exception) {
+        }
         _isRunning.value = true
-        Log.i(TAG, "PureGuardAccessibilityService 已与系统建立连接并激活")
+        Log.i(TAG, "PureGuardAccessibilityService 已与系统建立连接并成功激活 FLAG_REPORT_VIEW_IDS")
     }
 
     /**
@@ -194,6 +203,7 @@ class PureGuardAccessibilityService : AccessibilityService() {
     }
 
     private fun inspectHongguoAdCard(root: AccessibilityNodeInfo, packageName: String): Boolean {
+        // 1. 检查是否存在广告标签且非正常选集
         val adLabelNodes = root.findAccessibilityNodeInfosByText("广告")
         if (!adLabelNodes.isNullOrEmpty()) {
             val episodeNodes = root.findAccessibilityNodeInfosByText("选集")
@@ -202,6 +212,34 @@ class PureGuardAccessibilityService : AccessibilityService() {
                 return performSwipeUp(packageName, "短剧广告卡片即时划过")
             }
         }
+
+        // 2. 几何特征兜底：检查屏幕底部是否存在高度在 88% 以下的底栏容器 (即 aq7/apt 上滑条)
+        try {
+            val displayMetrics = resources.displayMetrics
+            val screenHeight = displayMetrics.heightPixels
+            val bottomThreshold = (screenHeight * 0.88f).toInt()
+
+            val rect = android.graphics.Rect()
+            fun searchBottomBar(node: AccessibilityNodeInfo, depth: Int): Boolean {
+                if (depth > 8) return false
+                node.getBoundsInScreen(rect)
+                if (rect.top >= bottomThreshold && rect.height() in 25..180 && rect.width() > 180) {
+                    val id = node.viewIdResourceName ?: ""
+                    if (id.contains("aq7") || id.contains("apt") || id.contains("aq6") || id.contains("up") || id.isBlank()) {
+                        Log.i(TAG, "[$packageName] 几何与ID双重命中底部上滑栏: bounds=$rect, id=$id")
+                        return performSwipeUp(packageName, "几何命中底部上滑栏: $rect")
+                    }
+                }
+                for (i in 0 until node.childCount) {
+                    val child = node.getChild(i) ?: continue
+                    if (searchBottomBar(child, depth + 1)) return true
+                }
+                return false
+            }
+            if (searchBottomBar(root, 0)) return true
+        } catch (_: Exception) {
+        }
+
         return false
     }
 
