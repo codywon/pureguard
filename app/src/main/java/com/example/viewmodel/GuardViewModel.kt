@@ -500,32 +500,95 @@ class GuardViewModel : ViewModel() {
                 id = "dns_1",
                 domainPattern = "ad.zijieapi.com",
                 category = "字节广告",
-                description = "开屏与信息流广告请求接口",
+                description = "开屏与信息流主接口",
                 isEnabled = true
             ),
             DnsRule(
                 id = "dns_2",
                 domainPattern = "pangolin-sdk-toutiao.com",
-                category = "穿山甲 SDK",
-                description = "插屏与动态模板预加载域名",
+                category = "穿山甲主域",
+                description = "短剧广告拉取与动态模板加载",
                 isEnabled = true
             ),
             DnsRule(
                 id = "dns_3",
-                domainPattern = "mi.gdt.qq.com",
-                category = "优量汇 SDK",
-                description = "竞价悬浮横幅广告域名",
+                domainPattern = "pglstatp-toutiao.com",
+                category = "穿山甲静态域",
+                description = "短剧广告模板与脚本资源（阻断重试）",
                 isEnabled = true
             ),
             DnsRule(
                 id = "dns_4",
+                domainPattern = "v1-ad.pstatp.com",
+                category = "广告视频流",
+                description = "短剧广告视频 CDN 节点 1",
+                isEnabled = true
+            ),
+            DnsRule(
+                id = "dns_5",
+                domainPattern = "v3-ad.pstatp.com",
+                category = "广告视频流",
+                description = "短剧广告视频 CDN 节点 3",
+                isEnabled = true
+            ),
+            DnsRule(
+                id = "dns_6",
+                domainPattern = "v6-ad.pstatp.com",
+                category = "广告视频流",
+                description = "短剧广告视频 CDN 节点 6",
+                isEnabled = true
+            ),
+            DnsRule(
+                id = "dns_7",
+                domainPattern = "v9-ad.pstatp.com",
+                category = "广告视频流",
+                description = "短剧广告视频 CDN 节点 9",
+                isEnabled = true
+            ),
+            DnsRule(
+                id = "dns_8",
+                domainPattern = "tosv.pstatp.com",
+                category = "广告视频重播",
+                description = "广告视频兜底重试与重播 CDN（彻底防重播）",
+                isEnabled = true
+            ),
+            DnsRule(
+                id = "dns_9",
+                domainPattern = "gdt.qq.com",
+                category = "腾讯优量汇",
+                description = "优量汇广告与竞价重试全域",
+                isEnabled = true
+            ),
+            DnsRule(
+                id = "dns_10",
+                domainPattern = "klinktech.com",
+                category = "快手短剧联盟",
+                description = "快手广告协议与视频分发",
+                isEnabled = true
+            ),
+            DnsRule(
+                id = "dns_11",
+                domainPattern = "adkwai.com",
+                category = "快手广告主域",
+                description = "快手插屏与信息流广告",
+                isEnabled = true
+            ),
+            DnsRule(
+                id = "dns_12",
+                domainPattern = "mobads.baidu.com",
+                category = "百青藤联盟",
+                description = "百度短剧广告接口与重试流",
+                isEnabled = true
+            ),
+            DnsRule(
+                id = "dns_13",
                 domainPattern = "dig.bdurl.net",
                 category = "遥测上报",
                 description = "广告曝光频次与行为统计",
                 isEnabled = true
             ),
             DnsRule(
-                id = "dns_5",
+                id = "dns_14",
                 domainPattern = "mon.snssdk.com",
                 category = "激励回调",
                 description = "激励视频验证接口（建议交由节点规则处理）",

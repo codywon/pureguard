@@ -47,18 +47,18 @@ class PureGuardAccessibilityService : AccessibilityService() {
             val width = displayMetrics.widthPixels.toFloat()
             val height = displayMetrics.heightPixels.toFloat()
 
-            // 模拟自然向上滑动手势：从屏幕 75% 处划向 25% 处，直接划过黑屏广告页
-            val startX = width * 0.5f
-            val startY = height * 0.75f
-            val endX = width * 0.5f
-            val endY = height * 0.25f
+            // 模拟高初速向上滑动手势：从屏幕 82% 划向 12% 处（跨度达 70% 屏幕高度），产生强力 Fling 换页
+            val startX = width * 0.48f
+            val startY = height * 0.82f
+            val endX = width * 0.48f
+            val endY = height * 0.12f
 
             val swipePath = Path().apply {
                 moveTo(startX, startY)
                 lineTo(endX, endY)
             }
 
-            val stroke = GestureDescription.StrokeDescription(swipePath, 0L, 250L)
+            val stroke = GestureDescription.StrokeDescription(swipePath, 0L, 180L)
             val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
             val success = dispatchGesture(gesture, object : GestureResultCallback() {
@@ -170,10 +170,12 @@ class PureGuardAccessibilityService : AccessibilityService() {
         if (text.isBlank()) return false
         val trimmed = text.trim()
         if (COMMON_SWIPE_UP_KEYWORDS.any { trimmed.contains(it) }) return true
-        if (trimmed.contains("上滑") && (trimmed.contains("看") || trimmed.contains("继续") || trimmed.contains("下") || trimmed.contains("剧") || trimmed.contains("跳过"))) {
-            return true
+        if (trimmed.contains("上滑") || trimmed.contains("向上滑") || trimmed.contains("滑动")) {
+            if (trimmed.contains("看") || trimmed.contains("继续") || trimmed.contains("剧") || trimmed.contains("下") || trimmed.contains("跳过") || trimmed.contains("播")) {
+                return true
+            }
         }
-        if (trimmed.contains("滑动") && (trimmed.contains("继续") || trimmed.contains("看") || trimmed.contains("跳过") || trimmed.contains("下"))) {
+        if (trimmed.contains("继续观看") && (trimmed.contains("短剧") || trimmed.contains("剧"))) {
             return true
         }
         return false
@@ -358,20 +360,25 @@ class PureGuardAccessibilityService : AccessibilityService() {
 
         // 短剧信息流全屏广告常见“上滑继续观看”提示词
         private val COMMON_SWIPE_UP_KEYWORDS = listOf(
+            "上滑继续观看短剧",
             "上滑继续观看",
-            "上滑继续",
             "上滑看短剧",
+            "继续观看短剧",
             "上滑看下一集",
             "上滑看下一部",
             "上滑进入下一集",
+            "上滑继续",
             "上滑跳过",
+            "滑动继续观看短剧",
             "滑动继续观看",
-            "滑动继续",
             "滑动看短剧",
+            "滑动继续",
             "滑动跳过",
             "向上滑动",
             "继续观看",
-            "上滑"
+            "上滑",
+            "赏花继续观看短剧",
+            "赏花继续观看"
         )
     }
 }
