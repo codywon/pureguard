@@ -31,6 +31,8 @@ class PureGuardAccessibilityService : AccessibilityService() {
     private var lastInspectTime = 0L
     private var lastSwipeTime = 0L
     private var swipeRetryJob: Job? = null
+    // 倒计时快速点击轮询 Job（500ms 高频盯梢 k9d 按钮是否变为可点击）
+    private var countdownPollingJob: Job? = null
     @Volatile
     private var isGesturing = false
 
@@ -44,6 +46,10 @@ class PureGuardAccessibilityService : AccessibilityService() {
             swipeRetryJob?.cancel()
             swipeRetryJob = null
         }
+        if (countdownPollingJob?.isActive == true) {
+            countdownPollingJob?.cancel()
+            countdownPollingJob = null
+        }
     }
 
     /**
@@ -55,6 +61,183 @@ class PureGuardAccessibilityService : AccessibilityService() {
             !root.findAccessibilityNodeInfosByViewId("com.phoenix.read:id/aq7").isNullOrEmpty() ||
             !root.findAccessibilityNodeInfosByViewId("com.phoenix.read:id/apt").isNullOrEmpty() ||
             !root.findAccessibilityNodeInfosByViewId("com.phoenix.read:id/aq6").isNullOrEmpty()
+    }
+
+    /**
+     * 【关键突破】穿山甲广告倒计时高频轮询机制：
+     *
+     * 穿山甲全屏广告在倒计时期间，系统内部存在 k9d 跳过/关闭节点，但 isEnabled=false；
+     * 倒计时归零的瞬间，SDK 将 k9d 的 isEnabled 置为 true。
+     * 本方法每 500ms 扫描一次所有候选跳过节点的 isEnabled/isClickable 状态，
+     * 一旦变为可点击，立即精准系统点击，彻底绕开广告倒计时等待！
+     *
+     * 同时也会检测 aq7/apt 的上滑解锁条，一旦倒计时结束解锁，
+     * 立即执行精准单页上滑手势切走广告。
+     */
+    private fun startCountdownPolling(packageName: String) {
+        if (countdownPollingJob?.isActive == true) return
+        countdownPollingJob = serviceScope.launch {
+            Log.i(TAG, "[$packageName] 启动 500ms 高频倒计时轮询，盯梢跳过按钮解锁瞬间")
+            var pollCount = 0
+            val maxPolls = 30 // 最多轮询 15 秒 (30 x 500ms)
+            while (pollCount < maxPolls) {
+                delay(500L)
+                pollCount++
+
+                val root = rootInActiveWindow ?: break
+                val pkg = root.packageName?.toString() ?: ""
+
+                // 熔断：离开红果短剧立即退出
+                if (!isHongguoPackage(pkg)) {
+                    Log.i(TAG, "[$packageName] 倒计时轮询熔断：已切出红果应用")
+                    break
+                }
+
+                // 尝试 1：直接寻找并点击跳过/关闭节点（k9d / 各类跳过按钮）
+                if (tryClickSkipNode(root, pkg)) {
+                    Log.i(TAG, "[$packageName] 倒计时轮询第 $pollCount 次：精准点击跳过节点成功！")
+                    break
+                }
+
+                // 核心防线：检查是否仍处于全屏广告倒计时进行中（k9d 或 tt_reward_full_count_down 存在但未解锁）
+                // 只要倒计时还在倒数，全屏蒙层还在，绝对不能执行上滑手势（避免被拦截+避免自杀轮询+避免连翻两集）！
+                val isCountingDown = isAdCountingDown(root)
+                if (isCountingDown) {
+                    Log.d(TAG, "[$packageName] 倒计时轮询第 $pollCount 次：广告倒计时进行中，保持盯梢，禁止滑动")
+                    continue
+                }
+
+                // 尝试 2：全屏广告不存在或已结束，若此时 aq7/apt 上滑条已就绪，执行精准单页上滑
+                if (trySwipeIfUnlocked(root, pkg)) {
+                    Log.i(TAG, "[$packageName] 倒计时轮询第 $pollCount 次：aq7/apt 已解锁，执行单页上滑成功！")
+                    break
+                }
+
+                // 尝试 3：检测是否已自然进入正片（广告已消失）
+                val hasAq7 = !root.findAccessibilityNodeInfosByViewId("com.phoenix.read:id/aq7").isNullOrEmpty()
+                val hasApt = !root.findAccessibilityNodeInfosByViewId("com.phoenix.read:id/apt").isNullOrEmpty()
+                if (!hasAq7 && !hasApt && !isInDramaPlayer(root)) {
+                    Log.i(TAG, "[$packageName] 倒计时轮询第 $pollCount 次：广告已自然结束，退出轮询")
+                    break
+                }
+
+                Log.d(TAG, "[$packageName] 倒计时轮询第 $pollCount 次：跳过按钮尚未解锁，继续等待")
+            }
+            countdownPollingJob = null
+        }
+    }
+
+    /**
+     * 尝试点击所有可能的跳过/关闭节点（包括穿山甲的 k9d 节点）：
+     * 通过 isEnabled && isClickable 双重验证，确保只在倒计时归零后才精准点击
+     */
+    private fun tryClickSkipNode(root: AccessibilityNodeInfo, packageName: String): Boolean {
+        // 1. 直接通过 ViewId 命中 k9d（红果历史上的穿山甲跳过按钮）
+        val k9dNodes = root.findAccessibilityNodeInfosByViewId("com.phoenix.read:id/k9d")
+        if (!k9dNodes.isNullOrEmpty()) {
+            for (node in k9dNodes) {
+                if (node.isEnabled && node.isClickable) {
+                    val clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (clicked) {
+                        lastClickTime = System.currentTimeMillis()
+                        Log.i(TAG, "[$packageName] 精准点击 k9d 跳过按钮成功！倒计时已归零")
+                        onNodeClicked?.invoke(packageName, "k9d跳过按钮", "倒计时归零精准点击")
+                        return true
+                    }
+                }
+                // k9d 节点存在但尚未解锁（isEnabled=false），说明倒计时仍在进行，记录状态
+                val nodeText = node.text?.toString() ?: ""
+                Log.d(TAG, "[$packageName] k9d 节点存在但未解锁: text=$nodeText, enabled=${node.isEnabled}, clickable=${node.isClickable}")
+            }
+        }
+
+        // 2. 通过文本匹配寻找跳过/关闭按钮（支持 "X秒后跳过"、"跳过"、"关闭" 等）
+        for (keyword in COMMON_SKIP_TEXT_KEYWORDS) {
+            val nodes = root.findAccessibilityNodeInfosByText(keyword)
+            if (!nodes.isNullOrEmpty()) {
+                for (node in nodes) {
+                    val text = node.text?.toString() ?: ""
+                    if (isActionableSkipText(text)) {
+                        // 向上寻找可点击父节点
+                        var target: AccessibilityNodeInfo? = node
+                        while (target != null && !target.isClickable) {
+                            target = target.parent
+                        }
+                        if (target != null && target.isEnabled && target.isClickable) {
+                            val clicked = target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            if (clicked) {
+                                lastClickTime = System.currentTimeMillis()
+                                Log.i(TAG, "[$packageName] 精准点击文本跳过节点成功: text=$text")
+                                onNodeClicked?.invoke(packageName, "文本跳过: $text", "倒计时轮询命中")
+                                return true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return false
+    }
+
+    /**
+     * 判断当前是否正处于广告强制倒计时中（全屏蒙层锁死中）
+     * 倒计时期间坚决禁止执行任何滑动操作，必须高频轮询盯梢解锁瞬间
+     */
+    private fun isAdCountingDown(root: AccessibilityNodeInfo): Boolean {
+        // 1. 穿山甲核心倒计时 ID
+        val countdownIds = listOf(
+            "com.phoenix.read:id/k9d",
+            "com.phoenix.read:id/tt_reward_full_count_down",
+            "com.phoenix.read:id/tt_video_ad_close_layout",
+            "com.dragon.read:id/k9d",
+            "com.dragon.read:id/tt_reward_full_count_down",
+            "com.dragon.read:id/tt_video_ad_close_layout"
+        )
+        for (id in countdownIds) {
+            val nodes = root.findAccessibilityNodeInfosByViewId(id)
+            if (!nodes.isNullOrEmpty()) {
+                val node = nodes.first()
+                // 如果存在倒计时控件，且尚未解锁（未使能或不可点击），或者文本带数字秒数
+                if (!node.isEnabled || !node.isClickable) {
+                    return true
+                }
+                val text = node.text?.toString() ?: ""
+                if (text.contains(Regex("""\d+\s*[秒s]""")) || text.contains("后可")) {
+                    return true
+                }
+            }
+        }
+
+        // 2. 文本特征辅助判断（如 "5s", "3秒后可跳过", "奖励将于"）
+        val countdownTexts = listOf("后可跳过", "后可关闭", "后发放", "秒后可")
+        for (ct in countdownTexts) {
+            val nodes = root.findAccessibilityNodeInfosByText(ct)
+            if (!nodes.isNullOrEmpty()) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    /**
+     * 检查 aq7/apt 节点是否已被穿山甲 SDK 解锁（isEnabled=true），
+     * 若解锁则执行单页上滑手势
+     */
+    private fun trySwipeIfUnlocked(root: AccessibilityNodeInfo, packageName: String): Boolean {
+        // 检查 aq7 或 apt 节点是否 isEnabled=true（解锁状态）
+        for (viewId in listOf("com.phoenix.read:id/aq7", "com.phoenix.read:id/apt")) {
+            val nodes = root.findAccessibilityNodeInfosByViewId(viewId)
+            if (!nodes.isNullOrEmpty()) {
+                val node = nodes.first()
+                if (node.isEnabled) {
+                    Log.i(TAG, "[$packageName] $viewId 节点已解锁(isEnabled=true)，立即执行单页上滑")
+                    return performSwipeUp(packageName, "$viewId 解锁上滑", root)
+                }
+            }
+        }
+        return false
     }
 
     override fun onServiceConnected() {
@@ -110,17 +293,17 @@ class PureGuardAccessibilityService : AccessibilityService() {
             val height = displayMetrics.heightPixels.toFloat()
 
             val startX = width * 0.50f
-            val startY = height * 0.72f
+            val startY = height * 0.70f
             val endX = width * 0.50f
-            val endY = height * 0.22f
+            val endY = height * 0.25f
 
             val swipePath = Path().apply {
                 moveTo(startX, startY)
                 lineTo(endX, endY)
             }
 
-            // 300ms 匀速拖拽抛掷，彻底根除 160ms 暴冲惯性导致连翻两集
-            val stroke = GestureDescription.StrokeDescription(swipePath, 0L, 300L)
+            // 360ms 平稳单页拖拽抛掷，行程 45% 适度越过吸附中线，消除暴冲动量，杜绝二次连翻
+            val stroke = GestureDescription.StrokeDescription(swipePath, 0L, 360L)
             val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
             val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
@@ -236,7 +419,43 @@ class PureGuardAccessibilityService : AccessibilityService() {
             packageName.startsWith("com.phoenix.") ||
             packageName.startsWith("com.dragon.")
 
+        // 0-PRE. 【穿山甲倒计时精准处理 · 最高优先级】
+        // k9d 节点在倒计时期间存在但 isEnabled=false，归零瞬间变为 isEnabled=true
+        // 策略：检测到 k9d 且已解锁 → 立即精准点击；倒计时进行中 → 启动 500ms 高频轮询盯梢，等到归零再点
+        if (isHongguo) {
+            val k9dNodes = root.findAccessibilityNodeInfosByViewId("com.phoenix.read:id/k9d")
+            if (!k9dNodes.isNullOrEmpty()) {
+                val k9dNode = k9dNodes.first()
+                if (k9dNode.isEnabled && k9dNode.isClickable) {
+                    // 倒计时已归零，立即精准点击！
+                    val clicked = k9dNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (clicked) {
+                        lastClickTime = System.currentTimeMillis()
+                        cancelAdRetry()
+                        Log.i(TAG, "[$packageName] k9d 已解锁，精准点击跳过广告成功！")
+                        onNodeClicked?.invoke(packageName, "k9d倒计时解锁", "倒计时归零即时点击")
+                        return
+                    }
+                } else {
+                    // 倒计时仍在进行，启动 500ms 高频轮询盯梢解锁瞬间
+                    val nodeText = k9dNode.text?.toString() ?: ""
+                    Log.i(TAG, "[$packageName] 穿山甲广告倒计时进行中（k9d: $nodeText, enabled=${k9dNode.isEnabled}），启动高频轮询")
+                    startCountdownPolling(packageName)
+                    return // 等待轮询处理，本次事件不再往下走
+                }
+            }
+
+            // 通用倒计时安全防护：若检测到全屏广告倒计时进行中（如带倒计时文本或倒计时View），
+            // 坚决拦截本次滑动，启动 500ms 高频盯梢轮询，杜绝倒计时期间误划与自杀式轮询
+            if (isAdCountingDown(root)) {
+                Log.i(TAG, "[$packageName] 检测到广告倒计时中，启动高频轮询盯梢，拦截本次滑动")
+                startCountdownPolling(packageName)
+                return
+            }
+        }
+
         // 0. 实机精准命中：针对官方红果短剧 (com.phoenix.read) 广告底栏（上滑继续观看短剧）精确 ViewId
+        // 注意：此处仅处理倒计时已结束、上滑条已出现的情况（k9d 已消失 or 不存在）
         if (isHongguo) {
             for (viewId in HONGGUO_SWIPE_UP_VIEW_IDS) {
                 val nodes = root.findAccessibilityNodeInfosByViewId(viewId)
